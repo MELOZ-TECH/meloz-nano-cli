@@ -67,13 +67,8 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		cfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{blk})
 	}
 
-	// shares: rootfs (orbroot) e dados (orbdata)
-	shares := make([]vz.DirectorySharingDeviceConfiguration, 0, 2)
-	rootShare, err := newShare("orbroot", share)
-	if err != nil {
-		return err
-	}
-	shares = append(shares, rootShare)
+	// share de dados (rootfs.erofs + data.img) — o rootfs é EROFS read-only
+	shares := make([]vz.DirectorySharingDeviceConfiguration, 0)
 	_ = os.MkdirAll(filepath.Dir(data), 0o755)
 	if dataShare, err := newShare("orbdata", filepath.Dir(data)); err == nil {
 		shares = append(shares, dataShare)

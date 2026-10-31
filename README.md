@@ -16,7 +16,7 @@ we do not need for plain `docker run`. `meloz-nano-cli` keeps the essential arch
 |---|---|---|---|
 | GUI | none | SwiftUI | none |
 | VM RAM | 1 GiB (default) | 4.18 GB | 2 GB |
-| Guest | Alpine + own init | Alpine + own init | Ubuntu + systemd |
+| Guest | Alpine + own init + squashfs rootfs | Alpine + own init | Ubuntu + systemd |
 | Docker data | btrfs loop image | btrfs volume | ext4 |
 | Host RSS | ~10 MB | ~279 MB | ~23 MB |
 | Boot to Docker | ~6 s | not measured | ~40 s |
@@ -91,7 +91,9 @@ virtualization.
 ## Limitations
 
 - No Kubernetes, Rosetta, vmnet/LAN port publishing, or GUI.
-- Guest rootfs is a virtiofs directory (EROFS image is on the roadmap).
+- Guest rootfs is a compressed squashfs image with a tmpfs overlay. EROFS was the
+  first choice, but the Alpine `virt` kernel ships neither EROFS built-in nor as a
+  module, so squashfs is used instead.
 - Single VM, fixed 2 vCPU; memory via `NANO_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 

@@ -8,6 +8,7 @@ ARCH="${ARCH:-aarch64}"
 BASE="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VER}/releases/${ARCH}/netboot"
 ASSETS="$ROOT/assets"
 CACHE="$ROOT/.cache"
+STATE="${NANO_STATE:-$HOME/.nano}"
 
 mkdir -p "$ASSETS" "$CACHE"
 
@@ -61,8 +62,14 @@ chmod +x "$CACHE/initrd/guestinit"
 ( cd "$CACHE/initrd" && find . | cpio -o -H newc --quiet | gzip -9 ) > "$ASSETS/initramfs.cpio.gz"
 echo "ok initramfs"
 
+# rootfs comprimido read-only (squashfs; o kernel Alpine virt não tem EROFS)
+if [ ! -f "$STATE/rootfs.sqfs" ] || [ -n "${FORCE_ROOTFS:-}" ]; then
+  docker run --rm --privileged -v "$ROOT/rootfs:/rootfs:ro" -v "$STATE:/out" alpine:3.22 sh -c \
+    'apk add -q squashfs-tools >/dev/null 2>&1; rm -f /out/rootfs.sqfs; mksquashfs /rootfs /out/rootfs.sqfs -comp zstd -noappend -quiet'
+  echo "ok rootfs.sqfs"
+fi
+
 # disco de dados btrfs
-STATE="${NANO_STATE:-$HOME/.nano}"
 mkdir -p "$STATE"
 if [ ! -f "$STATE/data.img" ]; then
   docker run --rm --privileged -v "$STATE:/out" alpine:3.22 sh -c \

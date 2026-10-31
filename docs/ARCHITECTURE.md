@@ -312,3 +312,25 @@ macOS.
 Licenças: Alpine mistura GPL/LGPL/MIT/BSD; QEMU é GPLv2; Docker/containerd e
 Kubernetes são Apache-2.0; libs Go/Rust em sua maioria MIT/BSD/Apache-2.0;
 Sparkle e Sentry MIT.
+
+## 15. Rootfs comprimido + overlay (estado final)
+
+O guest não usa mais o diretório do host montado por virtiofs como raiz. Agora:
+
+```
+/data/rootfs.sqfs  (68 MB, zstd)   ->  loop1 -> /ro   (squashfs, read-only)
+/data/data.img     (8 GB btrfs)    ->  loop0 -> /var/lib/docker
+/ro + tmpfs (/rw/upper)            ->  overlay em /newroot -> chroot
+```
+
+- `scripts/bootstrap.sh` gera o `rootfs.sqfs` com `mksquashfs -comp zstd`
+  (269 MB de diretório → 68 MB de imagem).
+- O `guestinit` monta o `modloop` (squashfs), carrega `loop`, `btrfs`, `bridge`,
+  `veth` e netfilter, monta o rootfs comprimido e um overlay em tmpfs.
+- `/data` é bind-montado dentro do novo root para o `dockerd`, o agente e os logs
+  sobreviverem ao `chroot`.
+
+**Por que não EROFS:** o kernel Alpine `virt` (6.12.114-0-virt) não traz EROFS
+nem embutido nem como módulo no `modloop` (verificado: não existe `erofs.ko`).
+Squashfs entrega o mesmo efeito (imagem comprimida, imutável, com overlay) e já
+está disponível no kernel.
