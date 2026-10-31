@@ -1,0 +1,6 @@
+/nano
+/assets/
+/rootfs/
+/.cache/
+/data.img
+*.sock

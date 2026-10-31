@@ -1,0 +1,103 @@
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/Code-Hex/vz/v3"
+)
+
+// spike: valida que os bindings de Virtualization.framework compilam e que a
+// configuração mínima da VM (kernel direto, NAT, balloon, vsock, console) é aceita.
+func main() {
+	if len(os.Args) >= 2 {
+		switch os.Args[1] {
+		case "up", "down", "status":
+			if err := cli(os.Args[1]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
+		case "daemon":
+			if err := runDaemon(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
+				panic(err)
+			}
+			return
+		}
+	}
+	if len(os.Args) >= 4 && os.Args[1] == "boot" {
+		disk := "-"
+		if len(os.Args) >= 5 {
+			disk = os.Args[4]
+		}
+		secs := 25
+		if len(os.Args) >= 6 {
+			fmt.Sscanf(os.Args[5], "%d", &secs)
+		}
+		share := "-"
+		if len(os.Args) >= 7 {
+			share = os.Args[6]
+		}
+		if err := boot(os.Args[2], os.Args[3], disk, share, secs); err != nil {
+			panic(err)
+		}
+		return
+	}
+	if len(os.Args) < 2 {
+		fmt.Println("uso: nano <kernel> | nano boot <kernel> <initramfs>")
+		os.Exit(2)
+	}
+
+	boot, err := vz.NewLinuxBootLoader(os.Args[1],
+		vz.WithCommandLine("console=hvc0 panic=-1"),
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	cfg, err := vz.NewVirtualMachineConfiguration(boot, 2, 1024*1024*1024)
+	if err != nil {
+		panic(err)
+	}
+
+	nat, err := vz.NewNATNetworkDeviceAttachment()
+	if err != nil {
+		panic(err)
+	}
+	net, err := vz.NewVirtioNetworkDeviceConfiguration(nat)
+	if err != nil {
+		panic(err)
+	}
+	cfg.SetNetworkDevicesVirtualMachineConfiguration([]*vz.VirtioNetworkDeviceConfiguration{net})
+
+	balloon, err := vz.NewVirtioTraditionalMemoryBalloonDeviceConfiguration()
+	if err != nil {
+		panic(err)
+	}
+	cfg.SetMemoryBalloonDevicesVirtualMachineConfiguration(
+		[]vz.MemoryBalloonDeviceConfiguration{balloon})
+
+	sock, err := vz.NewVirtioSocketDeviceConfiguration()
+	if err != nil {
+		panic(err)
+	}
+	cfg.SetSocketDevicesVirtualMachineConfiguration(
+		[]vz.SocketDeviceConfiguration{sock})
+
+	serial, err := vz.NewFileHandleSerialPortAttachment(os.Stdin, os.Stdout)
+	if err != nil {
+		panic(err)
+	}
+	serialCfg, err := vz.NewVirtioConsoleDeviceSerialPortConfiguration(serial)
+	if err != nil {
+		panic(err)
+	}
+	cfg.SetSerialPortsVirtualMachineConfiguration(
+		[]*vz.VirtioConsoleDeviceSerialPortConfiguration{serialCfg})
+
+	ok, err := cfg.Validate()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("config válida=%v cpus=2 mem=1GiB (bindings ok)\n", ok)
+}
