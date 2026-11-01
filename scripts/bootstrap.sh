@@ -40,7 +40,7 @@ fi
 
 # rootfs Alpine + Docker (via container)
 if [ ! -d "$ROOT/rootfs" ]; then
-  docker build -q -t nanoc-rootfs "$ROOT/guest" >/dev/null
+  docker build ${PLATFORM:+--platform "$PLATFORM"} -q -t nanoc-rootfs "$ROOT/guest" >/dev/null
   cid=$(docker create nanoc-rootfs)
   mkdir -p "$ROOT/rootfs"
   docker export "$cid" | tar -x -C "$ROOT/rootfs"

@@ -7,6 +7,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 VERSION="${1:-dev}"
 export NANOC_STATE="$ROOT/dist"
+export PLATFORM="${PLATFORM:-linux/arm64}"
 
 rm -rf dist && mkdir -p dist/assets
 ./scripts/bootstrap.sh
