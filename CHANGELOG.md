@@ -4,7 +4,7 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-01
 
 ### Added
 
@@ -37,5 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `make bootstrap` to fetch kernel/initramfs/modloop and build the guest rootfs.
 - Unit tests, integration test script, CI workflow and architecture docs.
 
-[Unreleased]: https://github.com/MELOZ-TECH/nano-container/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/MELOZ-TECH/nano-container/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/MELOZ-TECH/nano-container/releases/tag/v0.2.0
 [0.1.0]: https://github.com/MELOZ-TECH/nano-container/releases/tag/v0.1.0
