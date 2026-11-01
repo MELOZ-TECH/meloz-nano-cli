@@ -5,11 +5,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,15 +32,19 @@ const (
 )
 
 type request struct {
-	Cmd    string `json:"cmd"`
-	Action string `json:"action,omitempty"`
+	Cmd       string   `json:"cmd"`
+	Action    string   `json:"action,omitempty"`
+	Container string   `json:"container,omitempty"`
+	Argv      []string `json:"argv,omitempty"`
 }
 
 type response struct {
-	OK      bool   `json:"ok"`
-	Message string `json:"message,omitempty"`
-	K8s     bool   `json:"k8s"`
-	Version string `json:"version,omitempty"`
+	OK       bool   `json:"ok"`
+	Message  string `json:"message,omitempty"`
+	K8s      bool   `json:"k8s"`
+	Version  string `json:"version,omitempty"`
+	Output   string `json:"output,omitempty"`
+	ExitCode int    `json:"exit_code,omitempty"`
 }
 
 func main() {
@@ -124,6 +130,12 @@ func dispatch(req request) response {
 		_ = os.RemoveAll(k3sData)
 		_ = os.Remove(k3sKubeconfig)
 		return response{OK: true, K8s: false, Message: "estado do kubernetes removido"}
+	case "exec":
+		out, code, err := containerExec(req.Container, req.Argv)
+		if err != nil {
+			return response{OK: false, Message: err.Error(), Output: out, ExitCode: code}
+		}
+		return response{OK: true, Output: out, ExitCode: code}
 	case "k8s-status":
 		return response{OK: true, K8s: k3sRunning()}
 	}
@@ -133,6 +145,56 @@ func dispatch(req request) response {
 func run(name string, args ...string) string {
 	out, _ := exec.Command(name, args...).CombinedOutput()
 	return string(out)
+}
+
+// containerExec entra nos namespaces do container e executa o comando,
+// sem passar pelo runc exec (que não resolve o rootfs neste kernel).
+func containerExec(id string, argv []string) (string, int, error) {
+	if id == "" || len(argv) == 0 {
+		return "", 1, fmt.Errorf("uso: exec <container> <cmd...>")
+	}
+	pid, err := containerPID(id)
+	if err != nil {
+		return "", 1, err
+	}
+	args := []string{"-t", fmt.Sprintf("%d", pid), "-m", "-u", "-i", "-n", "-p", "-r"}
+	args = append(args, argv...)
+	cmd := exec.Command("nsenter", args...)
+	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+		err = nil
+	}
+	return string(out), code, err
+}
+
+func containerPID(id string) (int, error) {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", dockerSock)
+		},
+	}
+	c := &http.Client{Transport: tr, Timeout: 5 * time.Second}
+	resp, err := c.Get("http://docker/containers/" + id + "/json")
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	var info struct {
+		State struct {
+			Pid int `json:"Pid"`
+		} `json:"State"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return 0, err
+	}
+	if info.State.Pid <= 0 {
+		return 0, fmt.Errorf("container %s não está rodando", id)
+	}
+	return info.State.Pid, nil
 }
 
 func k3sRunning() bool {

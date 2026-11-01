@@ -157,13 +157,23 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			go func(c net.Conn) {
 				defer c.Close()
 				var req struct {
-					Cmd    string `json:"cmd"`
-					Action string `json:"action"`
+					Cmd       string   `json:"cmd"`
+					Action    string   `json:"action"`
+					Container string   `json:"container"`
+					Argv      []string `json:"argv"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active()}
 				if req.Cmd == "k8s" {
 					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
+					return
+				}
+				if req.Cmd == "exec" {
+					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+						"cmd":       "exec",
+						"container": req.Container,
+						"argv":      req.Argv,
+					}))
 					return
 				}
 				if req.Cmd == "stop" {
@@ -241,6 +251,10 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 
 // guestControl fala com o nanoc-agent no guest (:2376) e devolve a resposta.
 func guestControl(action string) map[string]any {
+	return guestControlRaw(map[string]any{"cmd": "k8s-" + action})
+}
+
+func guestControlRaw(payload map[string]any) map[string]any {
 	out := map[string]any{"ok": false, "message": "guest sem controle"}
 	var c net.Conn
 	var err error
@@ -256,7 +270,7 @@ func guestControl(action string) map[string]any {
 		return out
 	}
 	defer c.Close()
-	_ = json.NewEncoder(c).Encode(map[string]string{"cmd": "k8s-" + action})
+	_ = json.NewEncoder(c).Encode(payload)
 	var resp map[string]any
 	if err := json.NewDecoder(c).Decode(&resp); err != nil {
 		out["message"] = err.Error()

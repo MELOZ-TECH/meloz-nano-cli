@@ -31,7 +31,17 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case "exec", "logs":
+		case "exec":
+			if len(os.Args) < 4 {
+				fmt.Fprintln(os.Stderr, "uso: nanoc exec <container> <cmd...>")
+				os.Exit(2)
+			}
+			if err := execCmd(os.Args[2], os.Args[3:]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
+		case "logs":
 			if err := dockerPassthrough(os.Args[1], os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
 				os.Exit(1)

@@ -24,7 +24,7 @@ func paths() (dir, ctl, docker string) {
 	return dir, filepath.Join(dir, ctlName), filepath.Join(dir, dockerSock)
 }
 
-func ctlRequestRaw(payload map[string]string, timeout time.Duration) (map[string]any, error) {
+func ctlRequestRaw(payload map[string]any, timeout time.Duration) (map[string]any, error) {
 	_, ctl, _ := paths()
 	c, err := net.DialTimeout("unix", ctl, 5*time.Second)
 	if err != nil {
@@ -160,6 +160,35 @@ func cli(cmd string) error {
 	return fmt.Errorf("comando desconhecido: %s", cmd)
 }
 
+// execCmd roda um comando dentro de um container, via agente no guest.
+func execCmd(container string, argv []string) error {
+	resp, err := ctlRequestRaw(map[string]any{
+		"cmd":       "exec",
+		"container": container,
+		"argv":      argv,
+	}, 10*time.Minute)
+	if err != nil {
+		return err
+	}
+	if out, ok := resp["output"].(string); ok && out != "" {
+		fmt.Print(out)
+	}
+	if msg, ok := resp["message"].(string); ok && msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+	}
+	code := 0
+	if c, ok := resp["exit_code"].(float64); ok {
+		code = int(c)
+	}
+	if ok, _ := resp["ok"].(bool); !ok || code != 0 {
+		if code != 0 {
+			os.Exit(code)
+		}
+		return fmt.Errorf("exec falhou")
+	}
+	return nil
+}
+
 // dockerPassthrough executa o docker CLI do host apontando para o socket do nanoc.
 func dockerPassthrough(cmd string, args []string) error {
 	path, err := exec.LookPath("docker")
@@ -187,7 +216,7 @@ func k8sCmd(action string) error {
 	default:
 		return fmt.Errorf("uso: nanoc k8s [enable|disable|status]")
 	}
-	resp, err := ctlRequestRaw(map[string]string{"cmd": "k8s", "action": action}, 30*time.Minute)
+	resp, err := ctlRequestRaw(map[string]any{"cmd": "k8s", "action": action}, 30*time.Minute)
 	if err != nil {
 		return err
 	}

@@ -64,7 +64,7 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc down` | stops the daemon/VM |
 | `nanoc status` | shows whether the daemon is running |
 | `nanoc ports` | lists ports published on `127.0.0.1` |
-| `nanoc exec <c> -- <cmd>` | runs `docker exec` against the guest |
+| `nanoc exec <c> -- <cmd>` | runs a command inside a container (via the guest agent) |
 | `nanoc logs <c>` | runs `docker logs` against the guest |
 | `nanoc k8s enable` | starts k3s inside the guest and writes `~/.nanoc/kubeconfig` |
 | `nanoc k8s disable` | stops k3s (state stays on the data image) |
@@ -89,6 +89,17 @@ nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework
   data image (btrfs via loop) and starts `dockerd`.
 - The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH. Kubernetes is opt-in.
+
+### Exec into containers
+
+`docker exec` is unreliable in this guest (runc does not resolve the container
+rootfs), so `nanoc exec` goes through the guest agent instead: it enters the
+container namespaces with `nsenter` and runs the command there.
+
+```sh
+nanoc exec mycontainer -- uname -m
+nanoc exec mycontainer -- sh -c 'ls /bin | wc -l'
+```
 
 ### Published ports
 
