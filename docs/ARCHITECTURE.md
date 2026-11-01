@@ -99,3 +99,28 @@ ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.
 - No LAN port publishing, no Kubernetes, no Rosetta, no GUI.
 - Single VM, fixed 2 vCPU.
 - The guest IP is static; there is no DHCP client.
+
+## Diagram
+
+![architecture](architecture.svg)
+
+```mermaid
+flowchart LR
+    CLI["nanoc CLI"] -->|unix socket| D["nanoc daemon"]
+    D --> VM
+
+    subgraph VM["Linux guest (1 GB, 2 vCPU)"]
+        A["nanoc-agent<br/>:2375 docker · :2376 control"] --> DK["dockerd + containerd<br/>overlay2"]
+        A --> K["k3s (optional)<br/>:6443"]
+        G["guestinit (PID 1)"] --> A
+        R["EROFS rootfs<br/>+ tmpfs overlay"] --- DKM["/var/lib/docker<br/>ext4 data.img"]
+        DK --- DKM
+    end
+
+    CLI2["docker CLI"] -->|"~/.nanoc/docker.sock"| D
+    D -->|"virtio-vsock 2375"| A
+    KUBE["kubectl"] -->|"127.0.0.1:6443"| D
+    D -->|"forward :6443"| K
+    PORT["curl 127.0.0.1:PORT"] --> D
+    D -->|"forward published ports"| VM
+```

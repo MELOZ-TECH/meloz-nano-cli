@@ -116,6 +116,10 @@ Environment variables: `NANOC_MEM_MB` (VM memory, default `1024`), `NANOC_ROOTFS
 
 ## How it works
 
+![architecture](docs/architecture.svg)
+
+(Mermaid version in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).)
+
 ```
 nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework──▶ Alpine VM
    (Go)                   (Go)                                        ├─ guestinit (PID 1)

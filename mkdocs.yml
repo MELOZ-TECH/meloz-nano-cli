@@ -1,0 +1,47 @@
+site_name: nano-container
+site_description: A small, CLI-only container runtime for macOS on Apple Silicon
+site_url: https://meloz-tech.github.io/nano-container/
+repo_url: https://github.com/MELOZ-TECH/nano-container
+repo_name: MELOZ-TECH/nano-container
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: teal
+      toggle:
+        icon: material/brightness-7
+        name: dark mode
+    - scheme: slate
+      primary: teal
+      toggle:
+        icon: material/brightness-4
+        name: light mode
+  features:
+    - navigation.instant
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+
+nav:
+  - Home: index.md
+  - Architecture: ARCHITECTURE.md
+  - Troubleshooting: TROUBLESHOOTING.md
+  - Changelog: CHANGELOG.md
+  - Contributing: CONTRIBUTING.md
+
+markdown_extensions:
+  - attr_list
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
