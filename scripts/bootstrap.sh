@@ -4,8 +4,13 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 ALPINE_VER="${ALPINE_VER:-3.22}"
+ALPINE_CHANNEL="${ALPINE_CHANNEL:-edge}"
 ARCH="${ARCH:-aarch64}"
-BASE="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VER}/releases/${ARCH}/netboot"
+if [ "$ALPINE_CHANNEL" = "edge" ]; then
+  BASE="https://dl-cdn.alpinelinux.org/alpine/edge/releases/${ARCH}/netboot"
+else
+  BASE="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VER}/releases/${ARCH}/netboot"
+fi
 ASSETS="$ROOT/assets"
 CACHE="$ROOT/.cache"
 STATE="${NANOC_STATE:-$HOME/.nanoc}"
@@ -54,9 +59,19 @@ fi
 cp "$ROOT/guest/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-guest.sh"
 chmod +x "$ROOT/rootfs/opt/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-agent" "$ROOT/rootfs/guestinit"
 
-# initramfs com o init próprio
+# módulos do modloop (para kernels cujo initramfs não tem virtiofs/vsock)
+rm -rf "$CACHE/mods" && mkdir -p "$CACHE/mods"
+docker run --rm -v "$ASSETS/modloop-virt:/m:ro" -v "$CACHE/mods:/out" alpine:3.22 sh -c '
+  apk add -q squashfs-tools >/dev/null 2>&1
+  unsquashfs -q -d /tmp/sq /m >/dev/null 2>&1
+  cp -a /tmp/sq/modules/. /out/
+'
+
+# initramfs com o init próprio e os módulos
 rm -rf "$CACHE/initrd" && mkdir -p "$CACHE/initrd"
 gzip -dc "$ASSETS/initramfs-virt" | ( cd "$CACHE/initrd" && cpio -idm --quiet )
+mkdir -p "$CACHE/initrd/lib/modules"
+cp -a "$CACHE/mods/." "$CACHE/initrd/lib/modules/"
 cp "$ROOT/rootfs/guestinit" "$CACHE/initrd/guestinit"
 chmod +x "$CACHE/initrd/guestinit"
 ( cd "$CACHE/initrd" && find . | cpio -o -H newc --quiet | gzip -9 ) > "$ASSETS/initramfs.cpio.gz"
@@ -67,6 +82,13 @@ if [ ! -f "$STATE/rootfs.sqfs" ] || [ -n "${FORCE_ROOTFS:-}" ]; then
   docker run --rm --privileged -v "$ROOT/rootfs:/rootfs:ro" -v "$STATE:/out" alpine:3.22 sh -c \
     'apk add -q squashfs-tools >/dev/null 2>&1; rm -f /out/rootfs.sqfs; mksquashfs /rootfs /out/rootfs.sqfs -comp zstd -noappend -quiet'
   echo "ok rootfs.sqfs"
+fi
+
+# rootfs EROFS (preferido; cai para squashfs se o kernel não suportar)
+if [ ! -f "$STATE/rootfs.erofs" ] || [ -n "${FORCE_ROOTFS:-}" ]; then
+  docker run --rm --privileged -v "$ROOT/rootfs:/rootfs:ro" -v "$STATE:/out" alpine:3.22 sh -c \
+    'apk add -q erofs-utils >/dev/null 2>&1; rm -f /out/rootfs.erofs; mkfs.erofs -z lz4hc --all-root /out/rootfs.erofs /rootfs >/dev/null 2>&1'
+  echo "ok rootfs.erofs"
 fi
 
 # disco de dados btrfs

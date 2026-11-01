@@ -173,11 +173,12 @@ virtualization.
 ## Limitations
 
 - No Rosetta, vmnet/LAN port publishing or GUI. Kubernetes is opt-in.
-- Guest rootfs is a compressed squashfs image with a tmpfs overlay. EROFS is
-  attempted first and falls back to squashfs: the Alpine `virt` kernel ships no
-  EROFS module, and a custom kernel build (`scripts/build-kernel.sh`) is still
-  work in progress.
-- Docker traffic goes over **vsock** when available, with a TCP fallback.
+- Guest rootfs is a compressed **EROFS** image with a tmpfs overlay (falls back to
+  squashfs when the kernel has no EROFS support).
+- The default kernel is Alpine **edge** (`6.18.x-virt`), which ships EROFS and
+  vsock modules. `ALPINE_CHANNEL=3.22 make bootstrap` uses the stable kernel.
+- Docker traffic uses TCP by default; `NANOC_VSOCK=1 nanoc up` switches the proxy
+  to virtio-vsock (works on the stable kernel; streaming is unstable on edge).
 - Single VM, fixed 2 vCPU; memory via `NANOC_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 

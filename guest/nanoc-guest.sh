@@ -18,12 +18,12 @@ ip route add default via 192.168.64.1 2>/dev/null
 DATA=$(sed -n 's/.*nanoc\.data=\([^ ]*\).*/\1/p' /proc/cmdline)
 [ -n "$DATA" ] || DATA=data.img
 mkdir -p /var/lib/docker "$(dirname "/data/$DATA")"
+{ echo "DATA=$DATA"; ls -l "/data" 2>&1 | head -5; command -v mkfs.ext4; } > /data/diag.log 2>&1
 if [ ! -e "/data/$DATA" ]; then
-  truncate -s 8G "/data/$DATA" 2>/dev/null && mkfs.btrfs -q -f "/data/$DATA" 2>/dev/null
+  { truncate -s 8G "/data/$DATA" 2>&1 && mkfs.ext4 -q -F "/data/$DATA" 2>&1; } >> /data/diag.log 2>&1
 fi
 if [ -e "/data/$DATA" ]; then
-  losetup /dev/loop0 "/data/$DATA" 2>/dev/null
-  mount -t btrfs /dev/loop0 /var/lib/docker 2>/dev/null
+  { echo "losetup:"; losetup /dev/loop0 "/data/$DATA" 2>&1; echo "mount:"; mount -t ext4 /dev/loop0 /var/lib/docker 2>&1; echo "fs:"; grep -E "btrfs|ext4" /proc/filesystems; } > /data/mount.log 2>&1
 fi
 
 # binfmt: imagens linux/amd64 rodam via qemu-x86_64

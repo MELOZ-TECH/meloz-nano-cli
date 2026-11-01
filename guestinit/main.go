@@ -27,8 +27,13 @@ func mount(src, dst, fstype string, flags uintptr, data string) error {
 }
 
 func modprobe(mod string) {
-	if err := exec.Command("/sbin/modprobe", mod).Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "guestinit: modprobe %s: %v\n", mod, err)
+	out, err := exec.Command("/sbin/modprobe", mod).CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "guestinit: modprobe %s: %v %s\n", mod, err, strings.TrimSpace(string(out)))
+		return
+	}
+	if mod == "virtiofs" || mod == "ext4" {
+		fmt.Printf("guestinit: módulo %s carregado\n", mod)
 	}
 }
 
@@ -68,6 +73,30 @@ func main() {
 		modprobe(m)
 	}
 
+	// módulos: do initramfs (edge) e/ou do modloop (stock), o que existir
+	if err := mount("/dev/vda", "/modloop", "squashfs", unix.MS_RDONLY, ""); err == nil {
+		if u := unameRelease(); u != "" {
+			// usa os módulos do initramfs quando existirem; senão aponta para o modloop
+			if _, err := os.Stat("/lib/modules/" + u); err != nil {
+				if _, statErr := os.Stat("/modloop/modules/" + u); statErr == nil {
+					_ = os.MkdirAll("/lib/modules", 0o755)
+					_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
+				}
+			}
+		}
+	}
+	for _, m := range []string{"virtiofs", "virtio_net", "virtio_pci", "virtio_blk",
+		"vsock", "vmw_vsock_virtio_transport", "vmw_vsock_virtio_transport_common",
+		"loop", "overlay", "vxlan", "udp_tunnel", "ip6_udp_tunnel",
+		"binfmt_misc", "ext4", "btrfs", "bridge", "veth", "br_netfilter",
+		"nf_tables", "nf_nat", "nf_conntrack", "nf_conntrack_netlink",
+		"nft_chain_nat", "nft_compat", "ip_tables", "x_tables",
+		"iptable_nat", "iptable_filter", "xt_nat", "xt_MASQUERADE",
+		"xt_conntrack", "xt_addrtype", "xt_comment", "xt_mark",
+		"xt_multiport", "xt_tcpudp"} {
+		modprobe(m)
+	}
+
 	// share de dados: rootfs.erofs + data.img ficam no host
 	_ = os.MkdirAll("/users", 0o755)
 	if err := mount("orbusers", "/users", "virtiofs", 0, ""); err == nil {
@@ -75,26 +104,8 @@ func main() {
 	}
 
 	if err := mount("orbdata", "/data", "virtiofs", 0, ""); err != nil {
-		fmt.Fprintln(os.Stderr, "guestinit: share orbdata indisponível")
+		fmt.Fprintf(os.Stderr, "guestinit: share orbdata indisponível: %v\n", err)
 		poweroff()
-	}
-
-	// módulos extra vêm do modloop (squashfs read-only em /dev/vda)
-	if err := mount("/dev/vda", "/modloop", "squashfs", unix.MS_RDONLY, ""); err == nil {
-		if u := unameRelease(); u != "" {
-			_ = os.RemoveAll("/lib/modules/" + u)
-			_ = os.MkdirAll("/lib/modules", 0o755)
-			_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
-			for _, m := range []string{"vsock", "vmw_vsock_virtio_transport",
-				"vmw_vsock_virtio_transport_common", "loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "binfmt_misc", "btrfs", "bridge", "veth",
-				"br_netfilter", "nf_tables", "nf_nat", "nf_conntrack",
-				"nf_conntrack_netlink", "nft_chain_nat", "nft_compat",
-				"ip_tables", "x_tables", "iptable_nat", "iptable_filter",
-				"xt_nat", "xt_MASQUERADE", "xt_conntrack", "xt_addrtype",
-				"xt_comment", "xt_mark", "xt_multiport", "xt_tcpudp"} {
-				modprobe(m)
-			}
-		}
 	}
 
 	// rootfs EROFS read-only + overlay gravável em tmpfs

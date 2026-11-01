@@ -20,7 +20,7 @@ func bootstrapAssets() error {
 	if err := os.MkdirAll(assets, 0o755); err != nil {
 		return err
 	}
-	want := []string{"Image", "initramfs.cpio.gz", "modloop-virt", "rootfs.sqfs"}
+	want := []string{"Image", "initramfs.cpio.gz", "modloop-virt"}
 
 	missing := false
 	for _, name := range want {
@@ -80,7 +80,7 @@ func bootstrapAssets() error {
 			continue
 		}
 		dest := filepath.Join(assets, name)
-		if name == "rootfs.sqfs" || name == "data.img" {
+		if name == "rootfs.sqfs" || name == "rootfs.erofs" || name == "data.img" {
 			dest = filepath.Join(dir, name)
 		}
 		out, err := os.Create(dest)

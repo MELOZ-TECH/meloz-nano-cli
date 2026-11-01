@@ -8,10 +8,11 @@ cd "$ROOT"
 VERSION="${1:-dev}"
 export NANOC_STATE="$ROOT/dist"
 export PLATFORM="${PLATFORM:-linux/arm64}"
+export ALPINE_CHANNEL="${ALPINE_CHANNEL:-edge}"
 
 rm -rf dist && mkdir -p dist/assets
 ./scripts/bootstrap.sh
 
 DIST="dist/nanoc-assets-${VERSION}.tar.gz"
-tar -czf "$DIST" -C dist assets/Image assets/initramfs.cpio.gz assets/modloop-virt rootfs.sqfs
+tar -czf "$DIST" -C dist assets/Image assets/initramfs.cpio.gz assets/modloop-virt rootfs.erofs rootfs.sqfs
 ls -lh "$DIST"

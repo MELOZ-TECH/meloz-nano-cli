@@ -77,12 +77,18 @@ func serveVsock() {
 		if err != nil {
 			continue
 		}
-		conn, err := net.FileConn(os.NewFile(uintptr(nfd), "vsock"))
-		if err != nil {
-			unix.Close(nfd)
-			continue
-		}
-		go proxy(conn)
+		f := os.NewFile(uintptr(nfd), "vsock")
+		go func(f *os.File) {
+			defer f.Close()
+			up, err := net.Dial("unix", dockerSock)
+			if err != nil {
+				log.Printf("vsock dial docker: %v", err)
+				return
+			}
+			defer up.Close()
+			go io.Copy(up, f)
+			io.Copy(f, up)
+		}(f)
 	}
 }
 

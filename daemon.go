@@ -295,16 +295,43 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				return
 			}
 			defer vc.Close()
-			go io.Copy(vc, hc)
-			io.Copy(hc, vc)
+			proxyCopy(hc, vc)
 		}(hc)
 	}
+}
+
+// proxyCopy encaminha nos dois sentidos e propaga o half-close (docker attach depende disso).
+func proxyCopy(a, b net.Conn) {
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(b, a)
+		if cw, ok := b.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = b.Close()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(a, b)
+		if cw, ok := a.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = a.Close()
+		}
+	}()
+	wg.Wait()
 }
 
 // dialGuest tenta vsock (se o kernel do guest suportar) e cai para TCP.
 var vsockOnce sync.Once
 
 func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
+	if os.Getenv("NANOC_VSOCK") != "1" {
+		return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
+	}
 	if devs := vm.SocketDevices(); len(devs) > 0 {
 		if c, err := devs[0].Connect(uint32(port)); err == nil {
 			vsockOnce.Do(func() { fmt.Fprintln(os.Stderr, "transporte do docker: vsock") })

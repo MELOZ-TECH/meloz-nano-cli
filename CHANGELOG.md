@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-01
+
+### Added
+
+- Guest rootfs is now **EROFS** (compressed, read-only) with a tmpfs overlay,
+  falling back to squashfs automatically.
+- Default kernel switched to Alpine **edge** (6.18.x-virt) so EROFS and vsock
+  modules are available; `ALPINE_CHANNEL=3.22` keeps the stable kernel.
+- Docker data image is ext4 (overlay2 friendly).
+- `NANOC_VSOCK=1` opts into the virtio-vsock transport (TCP is the default).
+
 ## [0.10.0] - 2026-11-01
 
 ### Added
