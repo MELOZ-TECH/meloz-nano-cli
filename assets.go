@@ -105,6 +105,9 @@ uso:
   nanoc up                 sobe a VM e o daemon
   nanoc down               para a VM
   nanoc status             mostra o estado
+  nanoc ports              lista portas publicadas em 127.0.0.1
+  nanoc exec <c> -- cmd    docker exec no guest
+  nanoc logs <c>           docker logs no guest
   nanoc bootstrap          baixa kernel/rootfs do release
   nanoc k8s <ação>         enable | disable | status | reset
   nanoc --version          versão

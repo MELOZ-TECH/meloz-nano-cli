@@ -24,8 +24,10 @@ tar -xzf "$TMP/nanoc.tar.gz" -C "$TMP"
 
 mkdir -p "$PREFIX"
 install -m 0755 "$TMP/nanoc" "$PREFIX/nanoc"
-if [ -f "$TMP/virt.entitlements" ]; then
-  codesign --force --sign - --entitlements "$TMP/virt.entitlements" "$PREFIX/nanoc"
+ENT="$TMP/build/virt.entitlements"
+[ -f "$ENT" ] || ENT="$TMP/virt.entitlements"
+if [ -f "$ENT" ]; then
+  codesign --force --sign - --entitlements "$ENT" "$PREFIX/nanoc"
 else
   echo "aviso: virt.entitlements não encontrado no pacote; assine manualmente" >&2
 fi
@@ -33,6 +35,6 @@ fi
 echo "nanoc instalado em $PREFIX/nanoc ($VERSION)"
 echo
 echo "próximos passos:"
-echo "  1. nanoc bootstrap   # baixa kernel/rootfs (precisa de Docker no host)"
+echo "  1. nanoc bootstrap   # baixa kernel/rootfs do release"
 echo "  2. nanoc up"
 echo "  3. export DOCKER_HOST=unix://\$HOME/.nanoc/docker.sock"

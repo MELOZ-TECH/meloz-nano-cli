@@ -160,6 +160,19 @@ func cli(cmd string) error {
 	return fmt.Errorf("comando desconhecido: %s", cmd)
 }
 
+// dockerPassthrough executa o docker CLI do host apontando para o socket do nanoc.
+func dockerPassthrough(cmd string, args []string) error {
+	path, err := exec.LookPath("docker")
+	if err != nil {
+		return fmt.Errorf("docker CLI não encontrado no PATH")
+	}
+	_, _, docker := paths()
+	c := exec.Command(path, append([]string{cmd}, args...)...)
+	c.Env = append(os.Environ(), "DOCKER_HOST=unix://"+docker)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
+}
+
 // k8sCmd liga/desliga/consulta o Kubernetes opcional no guest.
 func k8sCmd(action string) error {
 	switch action {

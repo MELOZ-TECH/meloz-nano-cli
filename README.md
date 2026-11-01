@@ -64,6 +64,8 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc down` | stops the daemon/VM |
 | `nanoc status` | shows whether the daemon is running |
 | `nanoc ports` | lists ports published on `127.0.0.1` |
+| `nanoc exec <c> -- <cmd>` | runs `docker exec` against the guest |
+| `nanoc logs <c>` | runs `docker logs` against the guest |
 | `nanoc k8s enable` | starts k3s inside the guest and writes `~/.nanoc/kubeconfig` |
 | `nanoc k8s disable` | stops k3s (state stays on the data image) |
 | `nanoc k8s status` | shows whether Kubernetes is running |

@@ -31,6 +31,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "exec", "logs":
+			if err := dockerPassthrough(os.Args[1], os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "up", "down", "status", "ports":
 			if err := cli(os.Args[1]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
