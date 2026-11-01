@@ -15,18 +15,35 @@ import (
 
 // runDaemon: dono da VM. Monta a configuração, sobe o guest, publica o socket
 // do Docker e o socket de controle (status/stop) do CLI.
-const (
-	guestAddr        = "192.168.64.2:2375"
-	guestAddrControl = "192.168.64.2:2376"
-)
+// guestIP é configurável para permitir máquinas extras na mesma rede NAT.
+func guestIP() string {
+	if v := os.Getenv("NANOC_GUEST_IP"); v != "" {
+		return v
+	}
+	return "192.168.64.2"
+}
+
+func guestAddr() string        { return guestIP() + ":2375" }
+func guestAddrControl() string { return guestIP() + ":2376" }
 
 func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	home, _ := os.UserHomeDir()
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
 
+	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit nanoc.ip=" + guestIP()
+	if v := os.Getenv("NANOC_DATA_REL"); v != "" {
+		cmdline += " nanoc.data=" + v
+	}
+	if v := os.Getenv("NANOC_HOSTNAME"); v != "" {
+		cmdline += " nanoc.host=" + v
+	}
+	noDocker := os.Getenv("NANOC_NO_DOCKER") == "1"
+	if noDocker {
+		cmdline += " nanoc.nodocker=1"
+	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
-		vz.WithCommandLine("console=hvc0 panic=-1 rdinit=/guestinit"),
+		vz.WithCommandLine(cmdline),
 		vz.WithInitrd(initrd),
 	)
 	if err != nil {
@@ -74,8 +91,12 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 
 	// share de dados (rootfs.erofs + data.img) — o rootfs é EROFS read-only
 	shares := make([]vz.DirectorySharingDeviceConfiguration, 0)
-	_ = os.MkdirAll(filepath.Dir(data), 0o755)
-	if dataShare, err := newShare("orbdata", filepath.Dir(data)); err == nil {
+	dataDir := filepath.Dir(data)
+	if v := os.Getenv("NANOC_SHARE_DIR"); v != "" {
+		dataDir = v
+	}
+	_ = os.MkdirAll(dataDir, 0o755)
+	if dataShare, err := newShare("orbdata", dataDir); err == nil {
 		shares = append(shares, dataShare)
 	}
 	// /Users compartilhado no mesmo caminho, para -v /Users/... funcionar
@@ -114,11 +135,15 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		return err
 	}
 
-	// espera o docker do guest responder (NAT: 192.168.64.2)
+	// espera o guest responder (docker ou agente de controle)
+	waitAddr := guestAddr()
+	if noDocker {
+		waitAddr = guestAddrControl()
+	}
 	var dialErr error
 	for i := 0; i < 90; i++ {
 		time.Sleep(time.Second)
-		c, err := net.DialTimeout("tcp", guestAddr, time.Second)
+		c, err := net.DialTimeout("tcp", waitAddr, time.Second)
 		if err != nil {
 			dialErr = err
 			continue
@@ -128,11 +153,17 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		break
 	}
 	if dialErr != nil {
-		return fmt.Errorf("guest não respondeu em %s: %v", guestAddr, dialErr)
+		return fmt.Errorf("guest não respondeu em %s: %v", waitAddr, dialErr)
 	}
 
-	_ = os.Remove(sockPath)
-	ln, err := net.Listen("unix", sockPath)
+	var ln net.Listener
+	if !noDocker {
+		_ = os.Remove(sockPath)
+		ln, err = net.Listen("unix", sockPath)
+		if err != nil {
+			return err
+		}
+	}
 	if err != nil {
 		return err
 	}
@@ -154,7 +185,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 
 	// portas publicadas pelo Docker no guest ficam acessíveis em 127.0.0.1:<porta>
 	pf := newPortForward()
-	go pf.run(sockPath)
+	if !noDocker {
+		go pf.run(sockPath)
+	}
 
 	go func() {
 		for {
@@ -174,6 +207,13 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active(), "bind": listenAddr()}
 				if req.Cmd == "k8s" {
 					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
+					return
+				}
+				if req.Cmd == "run" {
+					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+						"cmd":  "run",
+						"argv": req.Argv,
+					}))
 					return
 				}
 				if req.Cmd == "exec" {
@@ -219,7 +259,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			}
 			go func(kc net.Conn) {
 				defer kc.Close()
-				gc, err := net.DialTimeout("tcp", "192.168.64.2:6443", 5*time.Second)
+				gc, err := net.DialTimeout("tcp", guestIP()+":6443", 5*time.Second)
 				if err != nil {
 					return
 				}
@@ -238,6 +278,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		ctl.Close()
 	}()
 
+	if ln == nil {
+		select {}
+	}
 	for {
 		hc, err := ln.Accept()
 		if err != nil {
@@ -246,7 +289,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			vc, err := net.Dial("tcp", guestAddr)
+			vc, err := net.Dial("tcp", guestAddr())
 			if err != nil {
 				return
 			}
@@ -267,7 +310,7 @@ func guestControlRaw(payload map[string]any) map[string]any {
 	var c net.Conn
 	var err error
 	for i := 0; i < 15; i++ {
-		c, err = net.DialTimeout("tcp", guestAddrControl, 2*time.Second)
+		c, err = net.DialTimeout("tcp", guestAddrControl(), 2*time.Second)
 		if err == nil {
 			break
 		}

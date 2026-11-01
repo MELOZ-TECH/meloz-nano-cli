@@ -130,6 +130,12 @@ func dispatch(req request) response {
 		_ = os.RemoveAll(k3sData)
 		_ = os.Remove(k3sKubeconfig)
 		return response{OK: true, K8s: false, Message: "estado do kubernetes removido"}
+	case "run":
+		out, code, err := guestRun(req.Argv)
+		if err != nil {
+			return response{OK: false, Message: err.Error(), Output: out, ExitCode: code}
+		}
+		return response{OK: true, Output: out, ExitCode: code}
 	case "exec":
 		out, code, err := containerExec(req.Container, req.Argv)
 		if err != nil {
@@ -149,6 +155,22 @@ func run(name string, args ...string) string {
 
 // containerExec entra nos namespaces do container e executa o comando,
 // sem passar pelo runc exec (que não resolve o rootfs neste kernel).
+// guestRun executa um comando direto no guest (usado pelas máquinas).
+func guestRun(argv []string) (string, int, error) {
+	if len(argv) == 0 {
+		return "", 1, fmt.Errorf("argv vazio")
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Env = []string{"PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME=/root"}
+	out, err := cmd.CombinedOutput()
+	code := 0
+	if ee, ok := err.(*exec.ExitError); ok {
+		code = ee.ExitCode()
+		err = nil
+	}
+	return string(out), code, err
+}
+
 func containerExec(id string, argv []string) (string, int, error) {
 	if id == "" || len(argv) == 0 {
 		return "", 1, fmt.Errorf("uso: exec <container> <cmd...>")

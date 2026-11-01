@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -48,8 +49,18 @@ func unameRelease() string {
 
 func main() {
 	fmt.Println("guestinit: start")
-	must(unix.Sethostname([]byte("nanoc")), "hostname")
 	mount("proc", "/proc", "proc", 0, "")
+	host := "nanoc"
+	if b, err := os.ReadFile("/proc/cmdline"); err == nil {
+		for _, f := range strings.Fields(string(b)) {
+			if strings.HasPrefix(f, "nanoc.host=") {
+				if v := strings.TrimPrefix(f, "nanoc.host="); v != "" {
+					host = v
+				}
+			}
+		}
+	}
+	must(unix.Sethostname([]byte(host)), "hostname")
 	mount("sysfs", "/sys", "sysfs", 0, "")
 	mount("devtmpfs", "/dev", "devtmpfs", 0, "")
 

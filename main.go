@@ -25,6 +25,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "machine":
+			if err := machineCmd(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "bootstrap":
 			if err := bootstrapAssets(); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
