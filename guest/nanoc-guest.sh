@@ -13,8 +13,11 @@ ip addr add 192.168.64.2/24 dev eth0 2>/dev/null
 ip route add default via 192.168.64.1 2>/dev/null
 
 # dados do Docker: data.img no host (share orbdata) montado por loop + btrfs
+mkdir -p /var/lib/docker
+if [ ! -e /data/data.img ]; then
+  truncate -s 8G /data/data.img 2>/dev/null && mkfs.btrfs -q -f /data/data.img 2>/dev/null
+fi
 if [ -e /data/data.img ]; then
-  mkdir -p /var/lib/docker
   losetup /dev/loop0 /data/data.img 2>/dev/null
   mount -t btrfs /dev/loop0 /var/lib/docker 2>/dev/null
 fi

@@ -8,7 +8,22 @@ permissions:
   contents: write
 
 jobs:
+  assets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - name: build guest assets
+        run: ./scripts/build-assets.sh "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: assets
+          path: dist/nanoc-assets-*.tar.gz
+
   release:
+    needs: assets
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -21,8 +36,14 @@ jobs:
           go test ./...
       - name: build artifact
         run: make release VERSION=${GITHUB_REF_NAME}
+      - uses: actions/download-artifact@v4
+        with:
+          name: assets
+          path: dist
       - name: publish
         uses: softprops/action-gh-release@v2
         with:
-          files: nanoc-*.tar.gz
+          files: |
+            nanoc-*.tar.gz
+            dist/nanoc-assets-*.tar.gz
           generate_release_notes: true

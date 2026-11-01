@@ -60,7 +60,7 @@ func ctlRequest(cmd string, timeout time.Duration) (map[string]any, error) {
 }
 
 func cli(cmd string) error {
-	dir, ctl, docker := paths()
+	_, ctl, docker := paths()
 	switch cmd {
 	case "status":
 		resp, err := ctlRequest("status", time.Second)
@@ -117,9 +117,10 @@ func cli(cmd string) error {
 		if err != nil {
 			return err
 		}
-		assets := envOr("NANOC_ASSETS", "assets")
-		rootfs := envOr("NANOC_ROOTFS", "rootfs")
-		logf, err := os.OpenFile(filepath.Join(dir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		stateDir, _, _ := paths()
+		assets := envOr("NANOC_ASSETS", filepath.Join(stateDir, "assets"))
+		rootfs := envOr("NANOC_ROOTFS", stateDir)
+		logf, err := os.OpenFile(filepath.Join(stateDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return err
 		}
@@ -139,7 +140,7 @@ func cli(cmd string) error {
 			}
 			time.Sleep(time.Second)
 		}
-		return fmt.Errorf("daemon não respondeu; veja %s/daemon.log", dir)
+		return fmt.Errorf("daemon não respondeu; veja %s/daemon.log", stateDir)
 	}
 	return fmt.Errorf("comando desconhecido: %s", cmd)
 }

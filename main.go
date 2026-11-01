@@ -25,6 +25,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "bootstrap":
+			if err := bootstrapAssets(); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "up", "down", "status":
 			if err := cli(os.Args[1]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
@@ -37,6 +43,10 @@ func main() {
 			}
 			return
 		}
+	}
+	if len(os.Args) < 2 {
+		printUsage()
+		return
 	}
 	if len(os.Args) >= 4 && os.Args[1] == "boot" {
 		disk := "-"
