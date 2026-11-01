@@ -104,7 +104,8 @@ nanoc exec mycontainer -- sh -c 'ls /bin | wc -l'
 ### Published ports
 
 `docker run -p 8080:80` works from macOS: the daemon watches the Docker API and
-forwards every published port to `127.0.0.1:<port>` on the host.
+forwards every published port to `127.0.0.1:<port>` on the host. With
+`NANOC_LAN=1` the ports bind to `0.0.0.0` and become reachable from your LAN.
 
 ```sh
 docker run -d -p 8080:80 nginx:alpine

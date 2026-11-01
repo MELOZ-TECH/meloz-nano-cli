@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"sync"
 	"time"
 )
@@ -27,6 +28,14 @@ func (p *portForward) run(sock string) {
 		p.sync(sock)
 		time.Sleep(2 * time.Second)
 	}
+}
+
+// listenAddr: 127.0.0.1 por padrão; 0.0.0.0 quando NANOC_LAN=1.
+func listenAddr() string {
+	if os.Getenv("NANOC_LAN") == "1" {
+		return "0.0.0.0"
+	}
+	return "127.0.0.1"
 }
 
 func (p *portForward) sync(sock string) {
@@ -74,7 +83,7 @@ func (p *portForward) sync(sock string) {
 		if _, ok := p.listeners[port]; ok {
 			continue
 		}
-		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		ln, err := net.Listen("tcp", fmt.Sprintf("%s:%d", listenAddr(), port))
 		if err != nil {
 			continue
 		}

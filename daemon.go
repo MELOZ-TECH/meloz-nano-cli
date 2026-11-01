@@ -163,7 +163,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 					Argv      []string `json:"argv"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
-				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active()}
+				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active(), "bind": listenAddr()}
 				if req.Cmd == "k8s" {
 					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
 					return

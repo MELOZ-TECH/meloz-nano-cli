@@ -14,7 +14,7 @@ extra daemons.
 
 - [ ] vsock instead of TCP for the Docker proxy (needs a kernel with
       `virtio_vsock` built in)
-- [ ] LAN port publishing through a privileged `vmnet` helper (localhost works today)
+- [x] LAN port publishing (`NANOC_LAN=1`); privileged `vmnet` helper not needed
 - [ ] EROFS rootfs with a custom kernel that ships the module
 - [x] optional Kubernetes (k3s via `nanoc k8s enable`), off by default
 

@@ -73,8 +73,12 @@ func cli(cmd string) error {
 			fmt.Println("nenhuma porta publicada")
 			return nil
 		}
+		addr := "127.0.0.1"
+		if b, ok := resp["bind"].(string); ok && b != "" {
+			addr = b
+		}
 		for _, p := range ports {
-			fmt.Printf("127.0.0.1:%v\n", p)
+			fmt.Printf("%s:%v\n", addr, p)
 		}
 		return nil
 	case "status":
@@ -248,8 +252,12 @@ func k8sCmd(action string) error {
 			fmt.Println("nenhuma porta publicada")
 			return nil
 		}
+		addr := "127.0.0.1"
+		if b, ok := resp["bind"].(string); ok && b != "" {
+			addr = b
+		}
 		for _, p := range ports {
-			fmt.Printf("127.0.0.1:%v\n", p)
+			fmt.Printf("%s:%v\n", addr, p)
 		}
 		return nil
 	case "status":
