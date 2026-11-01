@@ -84,6 +84,8 @@ func machineCmd(args []string) error {
 			fmt.Printf("%s: parada\n", name)
 		}
 		return nil
+	case "ssh":
+		return machineSSH(name, args[2:])
 	case "exec":
 		if len(args) < 3 {
 			return fmt.Errorf("uso: nanoc machine exec <nome> -- <cmd...>")
@@ -108,6 +110,9 @@ func machineCreate(name string) error {
 	// IP fixo a partir de .10 para não colidir com a VM do Docker (.2)
 	n := len(machineNames())
 	cfg := machineConfig{Name: name, IP: fmt.Sprintf("192.168.64.%d", 10+n), Cpus: 2, Mem: 1024}
+	if err := ensureMachineKey(name); err != nil {
+		return err
+	}
 	b, _ := json.MarshalIndent(cfg, "", "  ")
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), b, 0o644); err != nil {
 		return err
@@ -153,6 +158,9 @@ func machineStart(name string) error {
 	if err != nil {
 		return err
 	}
+	if err := ensureMachineKey(name); err != nil {
+		return err
+	}
 	if machineRunning(name) {
 		fmt.Printf("%s: já está rodando\n", name)
 		return nil
@@ -195,6 +203,52 @@ func machineStart(name string) error {
 		time.Sleep(time.Second)
 	}
 	return fmt.Errorf("máquina não respondeu; veja %s", machineLog(name))
+}
+
+// ensureMachineKey cria o par de chaves e o authorized_keys da máquina.
+func ensureMachineKey(name string) error {
+	dir := machinePath(name)
+	key := filepath.Join(dir, "id_ed25519")
+	if _, err := os.Stat(key); err == nil {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "ssh"), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command("ssh-keygen", "-t", "ed25519", "-N", "", "-C", "nanoc-"+name, "-f", key)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ssh-keygen: %v %s", err, out)
+	}
+	pub, err := os.ReadFile(key + ".pub")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dir, "ssh", "authorized_keys"), pub, 0o600)
+}
+
+func machineSSH(name string, extra []string) error {
+	cfg, err := loadMachine(name)
+	if err != nil {
+		return err
+	}
+	if !machineRunning(name) {
+		return fmt.Errorf("máquina %q não está rodando (nanoc machine start %s)", name, name)
+	}
+	if err := ensureMachineKey(name); err != nil {
+		return err
+	}
+	args := []string{
+		"-i", filepath.Join(machinePath(name), "id_ed25519"),
+		"-p", "2222",
+		"-o", "StrictHostKeyChecking=no",
+		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "LogLevel=ERROR",
+		"root@" + cfg.IP,
+	}
+	args = append(args, extra...)
+	c := exec.Command("ssh", args...)
+	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return c.Run()
 }
 
 func machineStop(name string) error {

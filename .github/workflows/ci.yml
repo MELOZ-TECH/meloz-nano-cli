@@ -29,3 +29,13 @@ jobs:
           path: coverage.out
       # Integração NÃO roda no CI: runners do GitHub são VMs e o macOS não
       # permite virtualização aninhada. Use `make itest` num Mac real.
+
+  homebrew:
+    runs-on: macos-15
+    steps:
+      - name: Install from tap
+        run: |
+          brew tap MELOZ-TECH/tap
+          brew install MELOZ-TECH/tap/nano-container
+          nanoc --version
+          nanoc doctor || true

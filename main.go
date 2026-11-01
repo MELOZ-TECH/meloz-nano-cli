@@ -31,6 +31,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "doctor":
+			if err := doctorCmd(); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "bootstrap":
 			if err := bootstrapAssets(); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)

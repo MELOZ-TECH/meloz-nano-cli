@@ -63,7 +63,8 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc up` | starts the VM in a detached daemon and waits until Docker answers |
 | `nanoc down` | stops the daemon/VM |
 | `nanoc status` | shows whether the daemon is running |
-| `nanoc machine <cmd>` | extra Linux VMs: `create`, `ls`, `start`, `stop`, `rm`, `exec` |
+| `nanoc doctor` | checks signature, assets, rootfs, daemon and docker socket |
+| `nanoc machine <cmd>` | extra Linux VMs: `create`, `ls`, `start`, `stop`, `rm`, `exec`, `ssh` |
 | `nanoc ports` | lists ports published on `127.0.0.1` |
 | `nanoc exec <c> -- <cmd>` | runs a command inside a container (via the guest agent) |
 | `nanoc logs <c>` | runs `docker logs` against the guest |
@@ -132,6 +133,8 @@ nanoc machine start dev
 nanoc machine exec dev -- uname -a
 nanoc machine exec dev -- sh -c 'hostname; nproc'
 nanoc machine ls
+nanoc machine ssh dev           # shell SSH (chave gerada em ~/.nanoc/machines/dev)
+nanoc machine exec dev -- uname -a
 nanoc machine stop dev
 nanoc machine rm dev
 ```

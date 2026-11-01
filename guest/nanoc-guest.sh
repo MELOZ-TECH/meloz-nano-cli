@@ -44,7 +44,19 @@ fi
 
 # supervisor: mantém o agente vivo mesmo se ele sair
 while true; do
-  /opt/nanoc-agent >>/data/agent.log 2>&1
+  if grep -q nanoc.nodocker /proc/cmdline; then
+  MDIR="/data/$(dirname "$DATA")"
+  mkdir -p /root/.ssh /etc/ssh
+  ssh-keygen -A >/dev/null 2>&1
+  if [ -f "$MDIR/ssh/authorized_keys" ]; then
+    cp "$MDIR/ssh/authorized_keys" /root/.ssh/authorized_keys
+    chmod 600 /root/.ssh/authorized_keys
+  fi
+  /usr/sbin/sshd -p 2222 -o PermitRootLogin=yes -o PasswordAuthentication=no \
+    -o StrictModes=no >/data/sshd.log 2>&1
+fi
+
+/opt/nanoc-agent >>/data/agent.log 2>&1
   sleep 1
 done &
 echo NANO-GUEST-READY
