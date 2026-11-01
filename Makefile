@@ -1,6 +1,6 @@
-BINARY := nano
+BINARY := nanoc
 ENTITLEMENTS := build/virt.entitlements
-DOCKER_HOST_ENV := unix://$(HOME)/.nano/docker.sock
+DOCKER_HOST_ENV := unix://$(HOME)/.nanoc/docker.sock
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -s -w -X main.version=$(VERSION)
 
@@ -28,7 +28,7 @@ run: sign
 
 release:
 	GOOS=darwin GOARCH=arm64 go build -ldflags "$(LDFLAGS)" -o $(BINARY) .
-	tar -czf $(BINARY)-$(VERSION)-darwin-arm64.tar.gz $(BINARY) README.md LICENSE
+	tar -czf $(BINARY)-$(VERSION)-darwin-arm64.tar.gz $(BINARY) $(ENTITLEMENTS) README.md LICENSE
 	@echo "gerado $(BINARY)-$(VERSION)-darwin-arm64.tar.gz"
 
 clean:

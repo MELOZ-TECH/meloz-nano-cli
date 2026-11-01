@@ -5,9 +5,9 @@ extra daemons.
 
 ## Next
 
-- [ ] `nano logs` / `nano exec`-friendly helper commands
-- [ ] configurable vCPU count and disk size (`~/.nano/config.json`)
-- [ ] `nano doctor` (checks entitlements, assets and socket state)
+- [ ] `nanoc logs` / `nanoc exec`-friendly helper commands
+- [ ] configurable vCPU count and disk size (`~/.nanoc/config.json`)
+- [ ] `nanoc doctor` (checks entitlements, assets and socket state)
 - [ ] install script and Homebrew tap
 
 ## Later
@@ -16,7 +16,7 @@ extra daemons.
       `virtio_vsock` built in)
 - [ ] LAN port publishing through a privileged `vmnet` helper
 - [ ] EROFS rootfs with a custom kernel that ships the module
-- [ ] optional `--kubernetes` (k3s), off by default
+- [x] optional Kubernetes (k3s via `nanoc k8s enable`), off by default
 
 ## Out of scope
 

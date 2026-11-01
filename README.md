@@ -1,20 +1,21 @@
-# meloz-nano-cli
+# nano-container
 
-[![ci](https://github.com/MELOZ-TECH/meloz-nano-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/MELOZ-TECH/meloz-nano-cli/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/MELOZ-TECH/meloz-nano-cli)](https://github.com/MELOZ-TECH/meloz-nano-cli/releases)
+[![ci](https://github.com/MELOZ-TECH/nano-container/actions/workflows/ci.yml/badge.svg)](https://github.com/MELOZ-TECH/nano-container/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/MELOZ-TECH/nano-container)](https://github.com/MELOZ-TECH/nano-container/releases)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![go](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
 
 A small, CLI-only container runtime for macOS on Apple Silicon.
 It boots a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
-and exposes the Docker socket to your Mac — no GUI, no Kubernetes, no SSH.
+and exposes the Docker socket to your Mac — no GUI, no SSH. Kubernetes is optional
+and off by default.
 
 > Status: **experimental**.
 
 ## Why
 
 Most container runtimes for macOS bring a full Linux distribution, a GUI, an SSH
-daemon and a large feature surface. `meloz-nano-cli` keeps only what `docker run`
+daemon and a large feature surface. `nano-container` keeps only what `docker run`
 needs: a tiny guest, one daemon, one CLI, and a socket.
 
 - VM with 1 GiB of RAM (configurable), 2 vCPU
@@ -42,45 +43,66 @@ make bootstrap
 make sign
 
 # 3. start the VM
-./nano up
-export DOCKER_HOST=unix://$HOME/.nano/docker.sock
+./nanoc up
+export DOCKER_HOST=unix://$HOME/.nanoc/docker.sock
 
 # 4. use it
 docker run --rm alpine:3.22 echo hello
 
 # 5. stop
-./nano down
+./nanoc down
 ```
 
-`nano status` reports the running daemon. The Docker socket lives at
-`~/.nano/docker.sock` and the state (btrfs `data.img`, compressed rootfs) at `~/.nano/`.
+`nanoc status` reports the running daemon. The Docker socket lives at
+`~/.nanoc/docker.sock` and the state (btrfs `data.img`, compressed rootfs) at `~/.nanoc/`.
 
 ## Commands
 
 | Command | Description |
 |---|---|
-| `nano up` | starts the VM in a detached daemon and waits until Docker answers |
-| `nano down` | stops the daemon/VM |
-| `nano status` | shows whether the daemon is running |
+| `nanoc up` | starts the VM in a detached daemon and waits until Docker answers |
+| `nanoc down` | stops the daemon/VM |
+| `nanoc status` | shows whether the daemon is running |
+| `nanoc k8s enable` | starts k3s inside the guest and writes `~/.nanoc/kubeconfig` |
+| `nanoc k8s disable` | stops k3s (state stays on the data image) |
+| `nanoc k8s status` | shows whether Kubernetes is running |
+| `nanoc k8s reset` | removes the k3s data (use if the cluster is corrupted) |
 
-Environment variables: `NANO_MEM_MB` (VM memory, default `1024`), `NANO_ROOTFS`,
-`NANO_DATA`, `NANO_MODLOOP`, `NANO_STATE`.
+Environment variables: `NANOC_MEM_MB` (VM memory, default `1024`), `NANOC_ROOTFS`,
+`NANOC_DATA`, `NANOC_MODLOOP`, `NANOC_STATE`.
 
 ## How it works
 
 ```
-nano CLI ──unix socket──▶ nano daemon ──Virtualization.framework──▶ Alpine VM
+nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework──▶ Alpine VM
    (Go)                   (Go)                                        ├─ guestinit (PID 1)
                                                                        ├─ dockerd (overlay2)
-                                                                       └─ nano-agent ──▶ docker.sock
+                                                                       └─ nanoc-agent ──▶ docker.sock
 ```
 
 - The guest boots an Alpine kernel with a custom initramfs whose `guestinit`:
   mounts the host share, loads kernel modules from the Alpine **modloop**, mounts the
   compressed rootfs (squashfs) read-only with a tmpfs overlay, mounts the Docker
   data image (btrfs via loop) and starts `dockerd`.
-- The daemon proxies `~/.nano/docker.sock` to the guest over the NAT network.
-- No GUI, no SSH, no Kubernetes.
+- The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
+- No GUI, no SSH. Kubernetes is opt-in.
+
+### Kubernetes (optional)
+
+Kubernetes is **off by default**; enabling it starts a single-node k3s inside the
+guest (about 300–400 MB extra while running):
+
+```sh
+nanoc k8s enable
+export KUBECONFIG=$HOME/.nanoc/kubeconfig
+kubectl get nodes
+
+nanoc k8s disable
+```
+
+The API server is proxied from `127.0.0.1:6443` on the host to the guest, so
+kubectl works out of the box. Cluster state lives on the btrfs data image and
+survives restarts until `nanoc k8s reset`.
 
 More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). If something fails,
 start with [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
@@ -98,11 +120,11 @@ virtualization.
 
 ## Limitations
 
-- No Kubernetes, Rosetta, vmnet/LAN port publishing, or GUI.
+- No Rosetta, vmnet/LAN port publishing or GUI. Kubernetes is opt-in.
 - Guest rootfs is a compressed squashfs image with a tmpfs overlay. EROFS was the
   first choice, but the Alpine `virt` kernel ships neither EROFS built-in nor as a
   module, so squashfs is used instead.
-- Single VM, fixed 2 vCPU; memory via `NANO_MEM_MB`.
+- Single VM, fixed 2 vCPU; memory via `NANOC_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 
 ## Project docs

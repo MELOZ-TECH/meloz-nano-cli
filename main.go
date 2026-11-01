@@ -15,6 +15,16 @@ func main() {
 		case "--version", "-v", "version":
 			printVersion()
 			return
+		case "k8s":
+			action := "status"
+			if len(os.Args) >= 3 {
+				action = os.Args[2]
+			}
+			if err := k8sCmd(action); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "up", "down", "status":
 			if err := cli(os.Args[1]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
@@ -47,7 +57,7 @@ func main() {
 		return
 	}
 	if len(os.Args) < 2 {
-		fmt.Println("uso: nano <kernel> | nano boot <kernel> <initramfs>")
+		fmt.Println("uso: nanoc <kernel> | nanoc boot <kernel> <initramfs>")
 		os.Exit(2)
 	}
 

@@ -8,7 +8,7 @@ ARCH="${ARCH:-aarch64}"
 BASE="https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VER}/releases/${ARCH}/netboot"
 ASSETS="$ROOT/assets"
 CACHE="$ROOT/.cache"
-STATE="${NANO_STATE:-$HOME/.nano}"
+STATE="${NANOC_STATE:-$HOME/.nanoc}"
 
 mkdir -p "$ASSETS" "$CACHE"
 
@@ -40,8 +40,8 @@ fi
 
 # rootfs Alpine + Docker (via container)
 if [ ! -d "$ROOT/rootfs" ]; then
-  docker build -q -t nano-rootfs "$ROOT/guest" >/dev/null
-  cid=$(docker create nano-rootfs)
+  docker build -q -t nanoc-rootfs "$ROOT/guest" >/dev/null
+  cid=$(docker create nanoc-rootfs)
   mkdir -p "$ROOT/rootfs"
   docker export "$cid" | tar -x -C "$ROOT/rootfs"
   docker rm "$cid" >/dev/null
@@ -50,9 +50,9 @@ fi
 
 # binários do guest (estáticos, linux/arm64)
 ( cd "$ROOT/guestinit" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$ROOT/rootfs/guestinit" . )
-( cd "$ROOT/agent" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$ROOT/rootfs/opt/nano-agent" . )
-cp "$ROOT/guest/nano-guest.sh" "$ROOT/rootfs/opt/nano-guest.sh"
-chmod +x "$ROOT/rootfs/opt/nano-guest.sh" "$ROOT/rootfs/opt/nano-agent" "$ROOT/rootfs/guestinit"
+( cd "$ROOT/agent" && GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags='-s -w' -o "$ROOT/rootfs/opt/nanoc-agent" . )
+cp "$ROOT/guest/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-guest.sh"
+chmod +x "$ROOT/rootfs/opt/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-agent" "$ROOT/rootfs/guestinit"
 
 # initramfs com o init próprio
 rm -rf "$CACHE/initrd" && mkdir -p "$CACHE/initrd"

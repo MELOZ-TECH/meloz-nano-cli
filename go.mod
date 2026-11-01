@@ -1,4 +1,4 @@
-module github.com/MELOZ-TECH/meloz-nano-cli
+module github.com/MELOZ-TECH/nano-container
 
 go 1.26.4
 

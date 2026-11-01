@@ -17,8 +17,8 @@ The VM booted but Docker did not come up. Check the guest log written to the hos
 share:
 
 ```sh
-tail -50 ~/.nano/dockerd.log
-tail -50 ~/.nano/daemon.log
+tail -50 ~/.nanoc/dockerd.log
+tail -50 ~/.nanoc/daemon.log
 ```
 
 Common causes:
@@ -26,7 +26,7 @@ Common causes:
 - `rootfs.sqfs` or `data.img` missing → run `make bootstrap`
 - module loading failed → confirm `assets/modloop-virt` exists and matches the
   kernel version
-- previous daemon still holding state → `pkill -f "nano daemon"` then `nano up`
+- previous daemon still holding state → `pkill -f "nanoc daemon"` then `nanoc up`
 
 ## `storage device attachment is invalid`
 
@@ -34,9 +34,9 @@ A previous VM had not fully released the disk image. The daemon retries, but if 
 persists:
 
 ```sh
-pkill -9 -f "nano daemon"
+pkill -9 -f "nanoc daemon"
 sleep 3
-nano up
+nanoc up
 ```
 
 ## `docker: Cannot connect to the Docker daemon`
@@ -44,7 +44,7 @@ nano up
 Use the socket exposed by the daemon:
 
 ```sh
-export DOCKER_HOST=unix://$HOME/.nano/docker.sock
+export DOCKER_HOST=unix://$HOME/.nanoc/docker.sock
 ```
 
 ## Port publishing does not work from macOS
@@ -55,4 +55,4 @@ requires the `vmnet` helper, which is not implemented yet.
 ## Slow or failed image pulls
 
 The guest resolver is set to `1.1.1.1` and `8.8.8.8`. If your network blocks them,
-edit `guest/nano-guest.sh` and rebuild the rootfs (`make bootstrap`).
+edit `guest/nanoc-guest.sh` and rebuild the rootfs (`make bootstrap`).

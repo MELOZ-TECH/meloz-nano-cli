@@ -26,7 +26,7 @@ body:
       label: Steps to reproduce
       placeholder: |
         1. make bootstrap
-        2. nano up
+        2. nanoc up
         3. docker run ...
     validations:
       required: true
@@ -34,7 +34,7 @@ body:
     id: version
     attributes:
       label: Version
-      description: Output of `nano --version`
+      description: Output of `nanoc --version`
     validations:
       required: true
   - type: input
@@ -48,5 +48,5 @@ body:
     id: logs
     attributes:
       label: Relevant logs
-      description: Output of `~/.nano/daemon.log` and `~/.nano/dockerd.log`
+      description: Output of `~/.nanoc/daemon.log` and `~/.nanoc/dockerd.log`
       render: shell

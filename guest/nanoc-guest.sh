@@ -25,6 +25,10 @@ dockerd --storage-driver=overlay2 >/data/dockerd.log 2>&1 &
 i=0
 while [ $i -lt 25 ]; do docker info >/dev/null 2>&1 && break; sleep 1; i=$((i+1)); done
 
-/opt/nano-agent >/data/agent.log 2>&1 &
+# supervisor: mantém o agente vivo mesmo se ele sair
+while true; do
+  /opt/nanoc-agent >>/data/agent.log 2>&1
+  sleep 1
+done &
 echo NANO-GUEST-READY
 sleep 3600

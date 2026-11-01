@@ -10,9 +10,9 @@ import (
 )
 
 // boot: sobe uma VM Linux (kernel direto, rootfs opcional em disco virtio-blk)
-// e escreve o console em stdout. Prova o caminho de boot do meloz-nano-cli.
+// e escreve o console em stdout. Prova o caminho de boot do nano-container.
 //
-//	nano boot <kernel> <initrd|-> <disk|-> [segundos]
+//	nanoc boot <kernel> <initrd|-> <disk|-> [segundos]
 func boot(kernel, initrd, disk, share string, seconds int) error {
 	cmdline := "console=hvc0 panic=-1 root=/dev/vda rootfstype=ext4 rw init=/bin/sh"
 	opts := []vz.LinuxBootLoaderOption{vz.WithCommandLine(cmdline)}

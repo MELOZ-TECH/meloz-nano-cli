@@ -1,6 +1,6 @@
 //go:build linux
 
-// guestinit: PID 1 do meloz-nano-cli. Monta o share de dados, o modloop de
+// guestinit: PID 1 do nano-container. Monta o share de dados, o modloop de
 // módulos, o rootfs EROFS read-only com overlay gravável e entra no rootfs.
 package main
 
@@ -48,6 +48,7 @@ func unameRelease() string {
 
 func main() {
 	fmt.Println("guestinit: start")
+	must(unix.Sethostname([]byte("nanoc")), "hostname")
 	mount("proc", "/proc", "proc", 0, "")
 	mount("sysfs", "/sys", "sysfs", 0, "")
 	mount("devtmpfs", "/dev", "devtmpfs", 0, "")
@@ -68,7 +69,7 @@ func main() {
 			_ = os.RemoveAll("/lib/modules/" + u)
 			_ = os.MkdirAll("/lib/modules", 0o755)
 			_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
-			for _, m := range []string{"loop", "btrfs", "bridge", "veth",
+			for _, m := range []string{"loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "btrfs", "bridge", "veth",
 				"br_netfilter", "nf_tables", "nf_nat", "nf_conntrack",
 				"nf_conntrack_netlink", "nft_chain_nat", "nft_compat",
 				"ip_tables", "x_tables", "iptable_nat", "iptable_filter",
@@ -112,8 +113,8 @@ func main() {
 	must(syscall.Chroot("/newroot"), "chroot")
 	must(os.Chdir("/"), "chdir /")
 
-	fmt.Println("guestinit: executando /opt/nano-guest.sh")
-	cmd := exec.Command("/bin/sh", "/opt/nano-guest.sh")
+	fmt.Println("guestinit: executando /opt/nanoc-guest.sh")
+	cmd := exec.Command("/bin/sh", "/opt/nanoc-guest.sh")
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	if err := cmd.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "guestinit: guest script: %v\n", err)

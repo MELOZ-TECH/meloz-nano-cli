@@ -6,8 +6,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-BIN=./nano
-SOCK="$HOME/.nano/docker.sock"
+BIN=./nanoc
+SOCK="$HOME/.nanoc/docker.sock"
 export DOCKER_HOST="unix://$SOCK"
 
 echo "== up"
@@ -20,8 +20,8 @@ echo "== docker version"
 docker version --format 'client={{.Client.Version}} server={{.Server.Version}}'
 
 echo "== run"
-out=$(docker run --rm alpine:3.22 echo nano-ok)
-[ "$out" = "nano-ok" ] || { echo "falhou: $out"; exit 1; }
+out=$(docker run --rm alpine:3.22 echo nanoc-ok)
+[ "$out" = "nanoc-ok" ] || { echo "falhou: $out"; exit 1; }
 
 echo "== driver"
 driver=$(docker info --format '{{.Driver}}')

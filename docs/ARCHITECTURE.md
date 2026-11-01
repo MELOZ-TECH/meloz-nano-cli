@@ -1,28 +1,28 @@
 # Architecture
 
-How `meloz-nano-cli` boots a Linux VM on macOS, runs Docker inside it and exposes
+How `nano-container` boots a Linux VM on macOS, runs Docker inside it and exposes
 the Docker socket to the host.
 
 ## Components
 
 | Piece | Language | Role |
 |---|---|---|
-| `nano` (CLI) | Go | `up`, `down`, `status`; talks to the daemon over a unix socket |
-| daemon (same binary, `nano daemon`) | Go | owns the VM, injects nothing, publishes the Docker socket |
+| `nanoc` (CLI) | Go | `up`, `down`, `status`; talks to the daemon over a unix socket |
+| daemon (same binary, `nanoc daemon`) | Go | owns the VM, injects nothing, publishes the Docker socket |
 | `guestinit` | Go (linux/arm64, static) | PID 1 inside the guest: mounts shares, loads modules, builds the root |
-| `nano-agent` | Go (linux/arm64, static) | listens on TCP inside the guest and forwards to `/var/run/docker.sock` |
+| `nanoc-agent` | Go (linux/arm64, static) | listens on TCP inside the guest and forwards to `/var/run/docker.sock` |
 | guest rootfs | Alpine | Docker Engine + containerd + runc, no systemd, no sshd |
 | kernel | Alpine `virt` | boots with `console=hvc0 rdinit=/guestinit` |
 
 ## Boot flow
 
 ```
-1. nano up
-     └─ spawns `nano daemon` (detached) and waits for the control socket
+1. nanoc up
+     └─ spawns `nanoc daemon` (detached) and waits for the control socket
 
 2. daemon builds the VM configuration
      ├─ LinuxBootLoader(kernel, initramfs) + cmdline `rdinit=/guestinit`
-     ├─ 2 vCPU, NANO_MEM_MB (default 1 GiB)
+     ├─ 2 vCPU, NANOC_MEM_MB (default 1 GiB)
      ├─ virtio-net with NAT
      ├─ virtio-balloon
      ├─ virtio-vsock (device present; the Alpine kernel has no vsock module)
@@ -38,16 +38,16 @@ the Docker socket to the host.
      ├─ losetup /data/rootfs.sqfs → /ro (squashfs, read-only)
      ├─ tmpfs /rw + overlay(lower=/ro, upper=/rw/upper) → /newroot
      ├─ bind /data into /newroot/data, mount pseudo-fs inside
-     └─ chroot /newroot and exec /opt/nano-guest.sh
+     └─ chroot /newroot and exec /opt/nanoc-guest.sh
 
 4. guest boot script
      ├─ network: eth0 up, 192.168.64.2/24, default route 192.168.64.1
      ├─ losetup /data/data.img → mount btrfs at /var/lib/docker
      ├─ dockerd --storage-driver=overlay2
-     └─ nano-agent on :2375
+     └─ nanoc-agent on :2375
 
 5. daemon exposes the Docker API
-     └─ unix socket ~/.nano/docker.sock → TCP 192.168.64.2:2375 → docker.sock
+     └─ unix socket ~/.nanoc/docker.sock → TCP 192.168.64.2:2375 → docker.sock
 ```
 
 ## Storage
@@ -57,8 +57,8 @@ the Docker socket to the host.
 | Kernel | `assets/Image` | raw arm64 `Image` extracted from the Alpine EFI zboot |
 | Initramfs | `assets/initramfs.cpio.gz` | gzip cpio with `guestinit` |
 | Modules | `assets/modloop-virt` | squashfs, attached read-only |
-| Guest rootfs | `~/.nano/rootfs.sqfs` | squashfs + zstd (269 MB dir → 68 MB) |
-| Docker data | `~/.nano/data.img` | btrfs image, mounted via loop |
+| Guest rootfs | `~/.nanoc/rootfs.sqfs` | squashfs + zstd (269 MB dir → 68 MB) |
+| Docker data | `~/.nanoc/data.img` | btrfs image, mounted via loop |
 
 Writes to the guest rootfs go to a tmpfs overlay; they are intentionally
 ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.

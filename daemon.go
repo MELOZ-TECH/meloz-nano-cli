@@ -15,10 +15,15 @@ import (
 
 // runDaemon: dono da VM. Monta a configuração, sobe o guest, publica o socket
 // do Docker e o socket de controle (status/stop) do CLI.
+const (
+	guestAddr        = "192.168.64.2:2375"
+	guestAddrControl = "192.168.64.2:2376"
+)
+
 func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	home, _ := os.UserHomeDir()
-	modloop := envOr("NANO_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
-	data := envOr("NANO_DATA", filepath.Join(home, ".nano", "data.img"))
+	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
+	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
 
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine("console=hvc0 panic=-1 rdinit=/guestinit"),
@@ -102,7 +107,6 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 
 	// espera o docker do guest responder (NAT: 192.168.64.2)
-	const guestAddr = "192.168.64.2:2375"
 	var dialErr error
 	for i := 0; i < 90; i++ {
 		time.Sleep(time.Second)
@@ -149,10 +153,15 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			go func(c net.Conn) {
 				defer c.Close()
 				var req struct {
-					Cmd string `json:"cmd"`
+					Cmd    string `json:"cmd"`
+					Action string `json:"action"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath}
+				if req.Cmd == "k8s" {
+					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
+					return
+				}
 				if req.Cmd == "stop" {
 					resp["stopping"] = true
 					if vm.CanRequestStop() {
@@ -171,6 +180,31 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				}
 				_ = json.NewEncoder(c).Encode(resp)
 			}(c)
+		}
+	}()
+
+	// API do Kubernetes: 127.0.0.1:6443 -> guest:6443 (quando habilitado)
+	go func() {
+		kl, err := net.Listen("tcp", "127.0.0.1:6443")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "api k8s indisponível: %v\n", err)
+			return
+		}
+		for {
+			kc, err := kl.Accept()
+			if err != nil {
+				return
+			}
+			go func(kc net.Conn) {
+				defer kc.Close()
+				gc, err := net.DialTimeout("tcp", "192.168.64.2:6443", 5*time.Second)
+				if err != nil {
+					return
+				}
+				defer gc.Close()
+				go io.Copy(gc, kc)
+				io.Copy(kc, gc)
+			}(kc)
 		}
 	}()
 
@@ -199,6 +233,32 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			io.Copy(hc, vc)
 		}(hc)
 	}
+}
+
+// guestControl fala com o nanoc-agent no guest (:2376) e devolve a resposta.
+func guestControl(action string) map[string]any {
+	out := map[string]any{"ok": false, "message": "guest sem controle"}
+	var c net.Conn
+	var err error
+	for i := 0; i < 15; i++ {
+		c, err = net.DialTimeout("tcp", guestAddrControl, 2*time.Second)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if err != nil {
+		out["message"] = err.Error()
+		return out
+	}
+	defer c.Close()
+	_ = json.NewEncoder(c).Encode(map[string]string{"cmd": "k8s-" + action})
+	var resp map[string]any
+	if err := json.NewDecoder(c).Decode(&resp); err != nil {
+		out["message"] = err.Error()
+		return out
+	}
+	return resp
 }
 
 func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {

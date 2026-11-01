@@ -7,12 +7,12 @@ Only the latest release receives security fixes.
 ## Reporting a vulnerability
 
 Please **do not** open a public issue. Report privately using GitHub's
-[Report a vulnerability](https://github.com/MELOZ-TECH/meloz-nano-cli/security/advisories/new)
+[Report a vulnerability](https://github.com/MELOZ-TECH/nano-container/security/advisories/new)
 flow, or email `security@meloz.tech`.
 
 Include:
 
-- affected version (`nano --version`)
+- affected version (`nanoc --version`)
 - macOS version and chip
 - steps to reproduce
 - impact (what an attacker could do)
@@ -22,7 +22,7 @@ disclosing the issue publicly.
 
 ## Scope
 
-`meloz-nano-cli` runs a Linux VM with the current user's privileges and requires
+`nano-container` runs a Linux VM with the current user's privileges and requires
 the `com.apple.security.virtualization` entitlement. Reports about the VM
 boundary, the guest init, the module loading path and the Docker socket proxy are
 especially welcome.

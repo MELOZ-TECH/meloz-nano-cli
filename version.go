@@ -6,5 +6,5 @@ import "fmt"
 var version = "dev"
 
 func printVersion() {
-	fmt.Printf("meloz-nano-cli %s\n", version)
+	fmt.Printf("nanoc %s\n", version)
 }
