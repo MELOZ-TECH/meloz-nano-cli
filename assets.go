@@ -41,16 +41,26 @@ func bootstrapAssets() error {
 	if v == "" || v == "dev" {
 		return fmt.Errorf("versão de desenvolvimento: rode ./scripts/bootstrap.sh no repositório")
 	}
-	url := fmt.Sprintf("%s/v%s/nanoc-assets-v%s.tar.gz", releaseBase, v, v)
-	fmt.Println("baixando", url)
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
+	// o nome do arquivo variou entre releases; tenta as duas formas
+	var resp *http.Response
+	var err error
+	for _, name := range []string{"nanoc-assets-" + v, "nanoc-assets-v" + v} {
+		url := fmt.Sprintf("%s/v%s/%s.tar.gz", releaseBase, v, name)
+		fmt.Println("baixando", url)
+		resp, err = http.Get(url)
+		if err != nil {
+			return err
+		}
+		if resp.StatusCode == http.StatusOK {
+			break
+		}
+		resp.Body.Close()
+		resp = nil
+	}
+	if resp == nil {
+		return fmt.Errorf("assets não publicados para v%s; use ./scripts/bootstrap.sh", v)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("assets não publicados para v%s (HTTP %d); use ./scripts/bootstrap.sh", v, resp.StatusCode)
-	}
 	gz, err := gzip.NewReader(resp.Body)
 	if err != nil {
 		return err
