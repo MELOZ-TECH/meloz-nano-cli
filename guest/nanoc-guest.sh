@@ -42,9 +42,7 @@ if ! grep -q nanoc.nodocker /proc/cmdline; then
   while [ $i -lt 25 ]; do docker info >/dev/null 2>&1 && break; sleep 1; i=$((i+1)); done
 fi
 
-# supervisor: mantém o agente vivo mesmo se ele sair
-while true; do
-  if grep -q nanoc.nodocker /proc/cmdline; then
+if grep -q nanoc.nodocker /proc/cmdline; then
   MDIR="/data/$(dirname "$DATA")"
   mkdir -p /root/.ssh /etc/ssh
   ssh-keygen -A >/dev/null 2>&1
@@ -56,8 +54,11 @@ while true; do
     -o StrictModes=no >/data/sshd.log 2>&1
 fi
 
-/opt/nanoc-agent >>/data/agent.log 2>&1
-  sleep 1
-done &
 echo NANO-GUEST-READY
-sleep 3600
+
+# supervisor: mantém o agente vivo mesmo se ele sair. Roda em primeiro plano:
+# se este script terminar, o guestinit (PID 1) desliga a VM.
+while true; do
+  /opt/nanoc-agent >>/data/agent.log 2>&1
+  sleep 1
+done

@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"golang.org/x/sys/unix"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -75,25 +74,42 @@ func serveVsock() {
 	for {
 		nfd, _, err := unix.Accept(fd)
 		if err != nil {
+			log.Printf("vsock accept: %v", err)
+			time.Sleep(100 * time.Millisecond)
 			continue
 		}
-		f := os.NewFile(uintptr(nfd), "vsock")
-		go func(f *os.File) {
-			defer f.Close()
+		// não-bloqueante: o os.File entra no poller e Close interrompe leituras pendentes
+		if err := unix.SetNonblock(nfd, true); err != nil {
+			unix.Close(nfd)
+			continue
+		}
+		vc := &vsockConn{File: os.NewFile(uintptr(nfd), "vsock")}
+		go func(vc *vsockConn) {
 			up, err := net.Dial("unix", dockerSock)
 			if err != nil {
 				log.Printf("vsock dial docker: %v", err)
+				vc.Close()
 				return
 			}
-			defer up.Close()
-			go func() {
-				_, _ = io.Copy(up, f)
-				_ = unix.Shutdown(int(f.Fd()), unix.SHUT_WR)
-			}()
-			_, _ = io.Copy(f, up)
-			_ = unix.Shutdown(int(f.Fd()), unix.SHUT_RDWR)
-		}(f)
+			relay(vc, up)
+		}(vc)
 	}
+}
+
+// vsockConn adiciona half-close a um socket AF_VSOCK aberto como *os.File.
+// Usa SyscallConn em vez de Fd(), que voltaria o descritor para modo bloqueante.
+type vsockConn struct{ *os.File }
+
+func (v *vsockConn) CloseWrite() error {
+	rc, err := v.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var serr error
+	if err := rc.Control(func(fd uintptr) { serr = unix.Shutdown(int(fd), unix.SHUT_WR) }); err != nil {
+		return err
+	}
+	return serr
 }
 
 func serveDocker() {
@@ -122,9 +138,7 @@ func proxy(conn net.Conn) {
 	if err != nil {
 		return
 	}
-	defer up.Close()
-	go io.Copy(up, conn)
-	io.Copy(conn, up)
+	relay(conn, up)
 }
 
 func serveControl() {

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const releaseBase = "https://github.com/MELOZ-TECH/nano-container/releases/download"
@@ -32,14 +33,25 @@ func bootstrapAssets() error {
 	if _, err := os.Stat(filepath.Join(dir, "rootfs.sqfs")); err != nil {
 		missing = true
 	}
-	if !missing {
+	v := strings.TrimPrefix(version, "v")
+	dev := v == "" || v == "dev"
+	// as correções do guest vivem nos assets: versão diferente do binário = baixar de novo
+	stampPath := filepath.Join(assets, ".version")
+	stamp, _ := os.ReadFile(stampPath)
+	current := strings.TrimSpace(string(stamp)) == v
+	if !missing && (dev || current) {
 		fmt.Println("assets já presentes em", assets)
 		return nil
 	}
-
-	v := strings.TrimPrefix(version, "v")
-	if v == "" || v == "dev" {
+	if dev {
 		return fmt.Errorf("versão de desenvolvimento: rode ./scripts/bootstrap.sh no repositório")
+	}
+	if !missing {
+		// a VM lê o rootfs direto destes arquivos: sobrescrever com ela ligada corrompe o guest
+		if _, err := ctlRequest("status", 500*time.Millisecond); err == nil {
+			return fmt.Errorf("assets de outra versão; rode `nanoc down` e depois `nanoc bootstrap`")
+		}
+		fmt.Printf("assets de outra versão (%q); atualizando para v%s\n", strings.TrimSpace(string(stamp)), v)
 	}
 	// o nome do arquivo variou entre releases; tenta as duas formas
 	var resp *http.Response
@@ -93,6 +105,9 @@ func bootstrapAssets() error {
 		}
 		out.Close()
 		n++
+	}
+	if err := os.WriteFile(stampPath, []byte(v+"\n"), 0o644); err != nil {
+		return err
 	}
 	fmt.Printf("assets instalados em %s (%d arquivos)\n", assets, n)
 	return nil

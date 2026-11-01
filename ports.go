@@ -17,10 +17,26 @@ import (
 type portForward struct {
 	mu        sync.Mutex
 	listeners map[int]net.Listener
+	client    *http.Client
 }
 
 func newPortForward() *portForward {
 	return &portForward{listeners: map[int]net.Listener{}}
+}
+
+// dockerClient: um só cliente para todas as consultas. Um Transport novo por
+// consulta deixava uma conexão keep-alive aberta a cada 2 s (sem timeout), e
+// cada uma prendia descritores no agente do guest.
+func dockerClient(sock string) *http.Client {
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, "unix", sock)
+		},
+		MaxIdleConns:    1,
+		IdleConnTimeout: 30 * time.Second,
+	}
+	return &http.Client{Transport: tr, Timeout: 5 * time.Second}
 }
 
 func (p *portForward) run(sock string) {
@@ -39,14 +55,10 @@ func listenAddr() string {
 }
 
 func (p *portForward) sync(sock string) {
-	tr := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", sock)
-		},
+	if p.client == nil {
+		p.client = dockerClient(sock)
 	}
-	client := &http.Client{Transport: tr, Timeout: 5 * time.Second}
-	resp, err := client.Get("http://docker/containers/json")
+	resp, err := p.client.Get("http://docker/containers/json")
 	if err != nil {
 		return
 	}

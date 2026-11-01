@@ -4,6 +4,28 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-11-01
+
+### Fixed
+
+- The VM no longer powers off after one hour: the guest boot script kept the
+  agent supervisor in the background and exited after `sleep 3600`.
+- The Docker API no longer dies with "too many open files". Closed clients are
+  now propagated across vsock (half-close), on both the host daemon and the
+  guest agent, and the port watcher reuses one HTTP client.
+- `docker exec` finds binaries inside the container: `guestinit` now does a
+  real `switch_root` (MS_MOVE + chroot) instead of a plain `chroot`.
+- `echo x | docker exec -i c cat` terminates instead of hanging.
+- `nanoc status` no longer reports a stopped VM as running: the daemon exits
+  when the VM stops and logs why it stopped.
+- Two `nanoc up` in a row can no longer boot two VMs on the same `data.img`
+  (exclusive lock taken before boot).
+
+### Upgrade
+
+Run `nanoc bootstrap` (or `make bootstrap`) after upgrading: the guest fixes
+live in the new kernel/initramfs/rootfs assets.
+
 ## [0.13.0] - 2026-11-01
 
 ### Added

@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -39,4 +40,21 @@ func TestPaths(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("diretório de estado deveria existir: %v", err)
 	}
+}
+
+func TestLockDaemonImpedeSegundoDaemon(t *testing.T) {
+	ctl := filepath.Join(t.TempDir(), "nanoc.sock")
+	if err := lockDaemon(ctl); err != nil {
+		t.Fatalf("primeiro lock deveria passar: %v", err)
+	}
+	first := daemonLock
+	defer first.Close()
+	if err := lockDaemon(ctl); err == nil {
+		t.Fatal("segundo daemon no mesmo estado deveria ser recusado")
+	}
+	first.Close()
+	if err := lockDaemon(ctl); err != nil {
+		t.Fatalf("depois que o primeiro sai, o lock deveria ficar livre: %v", err)
+	}
+	daemonLock.Close()
 }
