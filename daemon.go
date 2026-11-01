@@ -8,8 +8,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"reflect"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/Code-Hex/vz/v3"
 )
@@ -27,7 +31,29 @@ func guestIP() string {
 func guestAddr() string        { return guestIP() + ":2375" }
 func guestAddrControl() string { return guestIP() + ":2376" }
 
+// daemonLock fica aberto enquanto o daemon vive: o flock some junto com o processo.
+var daemonLock *os.File
+
+// lockDaemon impede dois daemons no mesmo estado. O socket de controle só existe
+// depois do boot, então checar só ele deixava dois `up` próximos subirem duas VMs
+// montando o mesmo data.img.
+func lockDaemon(ctlPath string) error {
+	f, err := os.OpenFile(ctlPath+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return fmt.Errorf("já existe um daemon usando %s", filepath.Dir(ctlPath))
+	}
+	daemonLock = f
+	return nil
+}
+
 func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
+	if err := lockDaemon(ctlPath); err != nil {
+		return err
+	}
 	home, _ := os.UserHomeDir()
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
@@ -182,6 +208,31 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	pidPath := ctlPath + ".pid"
 	_ = os.WriteFile(pidPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0o644)
 
+	// se a VM parar sozinha, o daemon sai junto: senão o status continua
+	// dizendo "rodando" com o socket do Docker morto
+	var stopping atomic.Bool
+	go func() {
+		for st := range vm.StateChangedNotify() {
+			if st != vz.VirtualMachineStateStopped && st != vz.VirtualMachineStateError {
+				continue
+			}
+			if !stopping.Load() {
+				fmt.Fprintf(os.Stderr, "VM parou inesperadamente (estado %v); daemon saindo\n", st)
+			}
+			ctl.Close()
+			_ = os.Remove(ctlPath)
+			if ln != nil {
+				ln.Close()
+				_ = os.Remove(sockPath)
+			}
+			_ = os.Remove(pidPath)
+			if stopping.Load() {
+				os.Exit(0)
+			}
+			os.Exit(1)
+		}
+	}()
+
 	fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
 
 	// portas publicadas pelo Docker no guest ficam acessíveis em 127.0.0.1:<porta>
@@ -226,6 +277,8 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 					return
 				}
 				if req.Cmd == "stop" {
+					fmt.Fprintf(os.Stderr, "%s parada pedida pelo socket de controle\n", time.Now().Format(time.RFC3339))
+					stopping.Store(true)
 					resp["stopping"] = true
 					if vm.CanRequestStop() {
 						_, _ = vm.RequestStop()
@@ -272,11 +325,17 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}()
 
 	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		<-stop
-		ln.Close()
+		sig := <-stop
+		fmt.Fprintf(os.Stderr, "%s parada por sinal %v\n", time.Now().Format(time.RFC3339), sig)
 		ctl.Close()
+		if ln == nil {
+			// máquina sem Docker: o loop principal está parado em select{}
+			_ = os.Remove(pidPath)
+			os.Exit(0)
+		}
+		ln.Close()
 	}()
 
 	if ln == nil {
@@ -300,29 +359,45 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 }
 
+type closeWriter interface{ CloseWrite() error }
+
+// halfCloser devolve quem sabe fechar só a escrita de c. O VirtioSocketConnection
+// do vz não expõe CloseWrite, mas o rawConn por baixo é um socket unix do macOS
+// que sabe; sem isso o fim do stdin (`echo x | docker exec -i c cat`) nunca
+// chegava ao guest e a conexão ficava pendurada para sempre.
+func halfCloser(c net.Conn) closeWriter {
+	if cw, ok := c.(closeWriter); ok {
+		return cw
+	}
+	v := reflect.ValueOf(c)
+	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
+		return nil
+	}
+	f := v.Elem().FieldByName("rawConn")
+	if !f.IsValid() || !f.CanAddr() {
+		return nil
+	}
+	raw := reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Interface()
+	cw, _ := raw.(closeWriter)
+	return cw
+}
+
 // proxyCopy encaminha nos dois sentidos e propaga o half-close (docker attach depende disso).
 func proxyCopy(a, b net.Conn) {
 	var wg sync.WaitGroup
 	wg.Add(2)
-	go func() {
+	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = io.Copy(b, a)
-		if cw, ok := b.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			// sem half-close: dá um tempo curto para o outro sentido drenar
-			_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
+		_, _ = io.Copy(dst, src)
+		if cw := halfCloser(dst); cw != nil && cw.CloseWrite() == nil {
+			return
 		}
-	}()
-	go func() {
-		defer wg.Done()
-		_, _ = io.Copy(a, b)
-		if cw, ok := a.(interface{ CloseWrite() error }); ok {
-			_ = cw.CloseWrite()
-		} else {
-			_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
-		}
-	}()
+		// sem half-close: fechar tudo é a única forma de liberar o outro sentido
+		_ = dst.Close()
+		_ = src.Close()
+	}
+	go pipe(b, a)
+	go pipe(a, b)
 	wg.Wait()
 }
 

@@ -136,8 +136,13 @@ func main() {
 	must(unix.Mount("/data", "/newroot/data", "", unix.MS_BIND|unix.MS_REC, ""), "bind /data")
 	mount("cgroup2", "/newroot/sys/fs/cgroup", "cgroup2", 0, "")
 
+	// switch_root: move o novo root para cima de "/" antes do chroot. Com chroot
+	// puro, a raiz do namespace de montagem continua sendo o initramfs, e o
+	// `runc exec` (que faz setns e volta para essa raiz) procurava os binários no
+	// lugar errado: `docker exec c pg_isready` dava "executable file not found".
 	must(os.Chdir("/newroot"), "chdir /newroot")
-	must(syscall.Chroot("/newroot"), "chroot")
+	must(unix.Mount(".", "/", "", unix.MS_MOVE, ""), "move /newroot -> /")
+	must(syscall.Chroot("."), "chroot")
 	must(os.Chdir("/"), "chdir /")
 
 	fmt.Println("guestinit: executando /opt/nanoc-guest.sh")
