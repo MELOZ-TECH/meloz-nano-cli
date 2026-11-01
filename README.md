@@ -1,24 +1,53 @@
-# nano-container
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/logo-dark.svg">
+    <img src="docs/img/logo-light.svg" alt="nano-container" height="96">
+  </picture>
+</p>
 
-[![ci](https://github.com/MELOZ-TECH/nano-container/actions/workflows/ci.yml/badge.svg)](https://github.com/MELOZ-TECH/nano-container/actions/workflows/ci.yml)
-[![release](https://img.shields.io/github/v/release/MELOZ-TECH/nano-container)](https://github.com/MELOZ-TECH/nano-container/releases)
-[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![go](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
-[![docs](https://img.shields.io/badge/docs-meloz--tech.github.io%2Fnano--container-teal)](https://meloz-tech.github.io/nano-container/)
+<p align="center">
+  <strong>A small, CLI-only container runtime for macOS on Apple Silicon.</strong><br>
+  One tiny Linux VM, Docker inside, the socket on your Mac. No GUI, no SSH.
+</p>
 
-A small, CLI-only container runtime for macOS on Apple Silicon.
+<p align="center">
+  <a href="https://github.com/MELOZ-TECH/nano-container/actions/workflows/ci.yml"><img alt="ci" src="https://img.shields.io/github/actions/workflow/status/MELOZ-TECH/nano-container/ci.yml?branch=main&label=ci&labelColor=030148&color=32bcad"></a>
+  <a href="https://github.com/MELOZ-TECH/nano-container/releases"><img alt="release" src="https://img.shields.io/github/v/release/MELOZ-TECH/nano-container?labelColor=030148&color=f20732"></a>
+  <img alt="platform" src="https://img.shields.io/badge/macOS_14%2B-Apple_Silicon-07038c?logo=apple&logoColor=white&labelColor=030148">
+  <a href="LICENSE"><img alt="license" src="https://img.shields.io/badge/license-Apache--2.0-07038c?labelColor=030148"></a>
+  <a href="https://github.com/MELOZ-TECH/nano-container/blob/main/go.mod"><img alt="go" src="https://img.shields.io/badge/go-1.22%2B-32bcad?logo=go&logoColor=white&labelColor=030148"></a>
+  <a href="https://meloz-tech.github.io/nano-container/"><img alt="docs" src="https://img.shields.io/badge/docs-site-f20732?labelColor=030148"></a>
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#commands">Commands</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="https://meloz-tech.github.io/nano-container/">Docs</a> ·
+  <a href="https://github.com/MELOZ-TECH/nano-container/blob/main/docs/TROUBLESHOOTING.md">Troubleshooting</a>
+</p>
+
+<p align="center">
+  <img src="docs/img/terminal-demo.svg" alt="Terminal demo: nanoc up, docker run -p 8088:80 nginx:alpine, nanoc ports, curl localhost:8088" width="650">
+</p>
+
+| **~17 s** | **1 GB** | **6.1 MB** | **CLI only** |
+|:---:|:---:|:---:|:---:|
+| boot to a usable Docker socket | VM memory by default | single `nanoc` binary | no GUI, no systemd, Apache-2.0 |
+
 It boots a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
-and exposes the Docker socket to your Mac — no GUI, no SSH. Kubernetes is optional
-and off by default.
+and exposes the Docker socket to your Mac. Kubernetes is optional and off by default.
 
 > Status: **experimental**.
 
 ## Demo
 
-`demo/demo.sh` roda a demonstração completa; `demo/nanoc-demo.cast` é uma
+The animation above is a real recording (`demo/nanoc-quickstart.cast`) against a
+running VM. `demo/demo.sh` roda a demonstração completa; `demo/nanoc-demo.cast` é uma
 gravação real (asciinema) gerada por `scripts/make-demo-cast.sh`:
 
 ```sh
+asciinema play demo/nanoc-quickstart.cast
 asciinema play demo/nanoc-demo.cast
 ```
 
@@ -128,7 +157,12 @@ Environment variables: `NANOC_MEM_MB` (VM memory, default `1024`), `NANOC_ROOTFS
 
 ## How it works
 
-![architecture](docs/architecture.svg)
+![nano-container architecture](docs/architecture.svg)
+
+A `docker run`, end to end: the request leaves the Mac through `~/.nanoc/docker.sock`,
+crosses **virtio-vsock** and is served by `dockerd` in the guest.
+
+![Animated diagram of a docker run request crossing host, vsock and guest](docs/img/docker-run-flow.svg)
 
 (Mermaid version in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).)
 
