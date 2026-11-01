@@ -62,6 +62,21 @@ func ctlRequest(cmd string, timeout time.Duration) (map[string]any, error) {
 func cli(cmd string) error {
 	_, ctl, docker := paths()
 	switch cmd {
+	case "ports":
+		resp, err := ctlRequest("status", time.Second)
+		if err != nil {
+			fmt.Println("nanoc: parado")
+			return nil
+		}
+		ports, _ := resp["ports"].([]any)
+		if len(ports) == 0 {
+			fmt.Println("nenhuma porta publicada")
+			return nil
+		}
+		for _, p := range ports {
+			fmt.Printf("127.0.0.1:%v\n", p)
+		}
+		return nil
 	case "status":
 		resp, err := ctlRequest("status", time.Second)
 		if err != nil {
@@ -173,6 +188,21 @@ func k8sCmd(action string) error {
 				fmt.Printf("kubeconfig: %s\nexport KUBECONFIG=%s\n", dst, dst)
 			}
 		}
+	case "ports":
+		resp, err := ctlRequest("status", time.Second)
+		if err != nil {
+			fmt.Println("nanoc: parado")
+			return nil
+		}
+		ports, _ := resp["ports"].([]any)
+		if len(ports) == 0 {
+			fmt.Println("nenhuma porta publicada")
+			return nil
+		}
+		for _, p := range ports {
+			fmt.Printf("127.0.0.1:%v\n", p)
+		}
+		return nil
 	case "status":
 		if on {
 			fmt.Println("kubernetes: ligado")

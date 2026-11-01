@@ -31,7 +31,7 @@ func main() {
 				os.Exit(1)
 			}
 			return
-		case "up", "down", "status":
+		case "up", "down", "status", "ports":
 			if err := cli(os.Args[1]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)
 				os.Exit(1)

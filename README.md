@@ -63,6 +63,7 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc up` | starts the VM in a detached daemon and waits until Docker answers |
 | `nanoc down` | stops the daemon/VM |
 | `nanoc status` | shows whether the daemon is running |
+| `nanoc ports` | lists ports published on `127.0.0.1` |
 | `nanoc k8s enable` | starts k3s inside the guest and writes `~/.nanoc/kubeconfig` |
 | `nanoc k8s disable` | stops k3s (state stays on the data image) |
 | `nanoc k8s status` | shows whether Kubernetes is running |
@@ -86,6 +87,17 @@ nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework
   data image (btrfs via loop) and starts `dockerd`.
 - The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH. Kubernetes is opt-in.
+
+### Published ports
+
+`docker run -p 8080:80` works from macOS: the daemon watches the Docker API and
+forwards every published port to `127.0.0.1:<port>` on the host.
+
+```sh
+docker run -d -p 8080:80 nginx:alpine
+open http://localhost:8080
+nanoc ports
+```
 
 ### Kubernetes (optional)
 

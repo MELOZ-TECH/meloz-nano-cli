@@ -144,6 +144,10 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 
 	fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
 
+	// portas publicadas pelo Docker no guest ficam acessíveis em 127.0.0.1:<porta>
+	pf := newPortForward()
+	go pf.run(sockPath)
+
 	go func() {
 		for {
 			c, err := ctl.Accept()
@@ -157,7 +161,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 					Action string `json:"action"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
-				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath}
+				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active()}
 				if req.Cmd == "k8s" {
 					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
 					return
