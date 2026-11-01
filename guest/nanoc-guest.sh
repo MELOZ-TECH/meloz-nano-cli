@@ -22,6 +22,14 @@ if [ -e /data/data.img ]; then
   mount -t btrfs /dev/loop0 /var/lib/docker 2>/dev/null
 fi
 
+# binfmt: imagens linux/amd64 rodam via qemu-x86_64
+if [ -x /usr/bin/qemu-x86_64 ]; then
+  mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+  if [ -w /proc/sys/fs/binfmt_misc/register ]; then
+    echo ':qemu-x86_64:M::\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-x86_64:OCF' > /proc/sys/fs/binfmt_misc/register 2>/dev/null
+  fi
+fi
+
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 
 dockerd --storage-driver=overlay2 >/data/dockerd.log 2>&1 &

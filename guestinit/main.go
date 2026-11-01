@@ -58,6 +58,11 @@ func main() {
 	}
 
 	// share de dados: rootfs.erofs + data.img ficam no host
+	_ = os.MkdirAll("/users", 0o755)
+	if err := mount("orbusers", "/users", "virtiofs", 0, ""); err == nil {
+		fmt.Println("guestinit: /Users compartilhado")
+	}
+
 	if err := mount("orbdata", "/data", "virtiofs", 0, ""); err != nil {
 		fmt.Fprintln(os.Stderr, "guestinit: share orbdata indisponível")
 		poweroff()
@@ -69,7 +74,7 @@ func main() {
 			_ = os.RemoveAll("/lib/modules/" + u)
 			_ = os.MkdirAll("/lib/modules", 0o755)
 			_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
-			for _, m := range []string{"loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "btrfs", "bridge", "veth",
+			for _, m := range []string{"loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "binfmt_misc", "btrfs", "bridge", "veth",
 				"br_netfilter", "nf_tables", "nf_nat", "nf_conntrack",
 				"nf_conntrack_netlink", "nft_chain_nat", "nft_compat",
 				"ip_tables", "x_tables", "iptable_nat", "iptable_filter",
@@ -105,6 +110,8 @@ func main() {
 	must(unix.Mount("/dev", "/newroot/dev", "", unix.MS_BIND|unix.MS_REC, ""), "bind /dev")
 	mount("tmpfs", "/newroot/run", "tmpfs", 0, "")
 	mount("tmpfs", "/newroot/tmp", "tmpfs", 0, "")
+	_ = os.MkdirAll("/newroot/Users", 0o755)
+	must(unix.Mount("/users", "/newroot/Users", "", unix.MS_BIND|unix.MS_REC, ""), "bind /Users")
 	_ = os.MkdirAll("/newroot/data", 0o755)
 	must(unix.Mount("/data", "/newroot/data", "", unix.MS_BIND|unix.MS_REC, ""), "bind /data")
 	mount("cgroup2", "/newroot/sys/fs/cgroup", "cgroup2", 0, "")

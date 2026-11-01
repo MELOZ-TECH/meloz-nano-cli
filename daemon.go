@@ -78,6 +78,14 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	if dataShare, err := newShare("orbdata", filepath.Dir(data)); err == nil {
 		shares = append(shares, dataShare)
 	}
+	// /Users compartilhado no mesmo caminho, para -v /Users/... funcionar
+	if os.Getenv("NANOC_SHARE_USERS") != "0" {
+		if _, err := os.Stat("/Users"); err == nil {
+			if usersShare, err := newShare("orbusers", "/Users"); err == nil {
+				shares = append(shares, usersShare)
+			}
+		}
+	}
 	cfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
 
 	pr, _, err := os.Pipe()

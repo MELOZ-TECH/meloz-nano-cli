@@ -4,6 +4,14 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-01
+
+### Added
+
+- `/Users` is shared into the guest, so `docker run -v /Users/...` bind mounts
+  work in both directions.
+- `linux/amd64` images run via `qemu-x86_64` and `binfmt_misc`.
+
 ## [0.7.0] - 2026-11-01
 
 ### Added

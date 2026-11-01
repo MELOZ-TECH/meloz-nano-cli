@@ -90,6 +90,13 @@ nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework
 - The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH. Kubernetes is opt-in.
 
+### Host folders and foreign architectures
+
+- `-v /Users/you/code:/app` works: `/Users` is shared into the guest at the same
+  path, so Docker bind mounts resolve transparently.
+- `linux/amd64` images run through `qemu-x86_64` registered with `binfmt_misc`
+  (slow, but they run).
+
 ### Exec into containers
 
 `docker exec` is unreliable in this guest (runc does not resolve the container
