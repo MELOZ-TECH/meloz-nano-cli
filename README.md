@@ -1,38 +1,36 @@
 # meloz-nano-cli
 
 A small, CLI-only container runtime for macOS on Apple Silicon.
-It runs a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
+It boots a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
 and exposes the Docker socket to your Mac — no GUI, no Kubernetes, no SSH.
 
-> Status: **experimental**. Built as a lightweight study of how OrbStack works.
+> Status: **experimental**.
 
 ## Why
 
-OrbStack is fast and light, but it ships a GUI, Kubernetes, Rosetta and a lot of surface
-we do not need for plain `docker run`. `meloz-nano-cli` keeps the essential architecture
-(one tiny VM + one daemon + a thin CLI) and drops the rest:
+Most container runtimes for macOS bring a full Linux distribution, a GUI, an SSH
+daemon and a large feature surface. `meloz-nano-cli` keeps only what `docker run`
+needs: a tiny guest, one daemon, one CLI, and a socket.
 
-| | meloz-nano-cli | OrbStack 2.2.5 | Colima 0.10.3 |
-|---|---|---|---|
-| GUI | none | SwiftUI | none |
-| VM RAM | 1 GiB (default) | 4.18 GB | 2 GB |
-| Guest | Alpine + own init + squashfs rootfs | Alpine + own init | Ubuntu + systemd |
-| Docker data | btrfs loop image | btrfs volume | ext4 |
-| Host RSS | ~10 MB | ~279 MB | ~23 MB |
-| Boot to Docker | ~6 s | not measured | ~40 s |
+- VM with 1 GiB of RAM (configurable), 2 vCPU
+- Alpine guest with its own PID 1 (`guestinit`), no systemd, no cloud-init, no sshd
+- Compressed read-only root filesystem with a writable overlay
+- Docker data on a btrfs image, `overlay2` storage driver
+- Bridge networking with published ports working inside the VM
+- Boot to a usable Docker socket in ~6 seconds
 
 ## Requirements
 
 - Apple Silicon, macOS 14+
 - Go 1.22+
 - Docker CLI (`docker`) on the host
-- A container runtime to build the guest rootfs (OrbStack, Docker Desktop, Colima)
+- A Docker-compatible runtime to build the guest rootfs (Docker Desktop, Colima, etc.)
 - Xcode command line tools (for `codesign`)
 
 ## Quick start
 
 ```sh
-# 1. fetch kernel/initramfs/modloop and build the guest rootfs
+# 1. fetch the kernel/initramfs/modloop and build the guest rootfs
 make bootstrap
 
 # 2. build and sign (the virtualization entitlement is mandatory)
@@ -49,8 +47,8 @@ docker run --rm alpine:3.22 echo hello
 ./nano down
 ```
 
-`nano status` reports the running daemon; the Docker socket lives at
-`~/.nano/docker.sock` and the state (btrfs `data.img`) at `~/.nano/`.
+`nano status` reports the running daemon. The Docker socket lives at
+`~/.nano/docker.sock` and the state (btrfs `data.img`, compressed rootfs) at `~/.nano/`.
 
 ## Commands
 
@@ -60,18 +58,22 @@ docker run --rm alpine:3.22 echo hello
 | `nano down` | stops the daemon/VM |
 | `nano status` | shows whether the daemon is running |
 
+Environment variables: `NANO_MEM_MB` (VM memory, default `1024`), `NANO_ROOTFS`,
+`NANO_DATA`, `NANO_MODLOOP`, `NANO_STATE`.
+
 ## How it works
 
 ```
-nano CLI ──unix socket──▶ nano daemon ──VZ──▶ Alpine VM (1 GiB)
-   (Go)                   (Go)                  ├─ own init (guestinit)
-                                                 ├─ dockerd (overlay2)
-                                                 └─ agent ──TCP──▶ docker.sock proxy
+nano CLI ──unix socket──▶ nano daemon ──Virtualization.framework──▶ Alpine VM
+   (Go)                   (Go)                                        ├─ guestinit (PID 1)
+                                                                       ├─ dockerd (overlay2)
+                                                                       └─ nano-agent ──▶ docker.sock
 ```
 
-- The guest boots from an Alpine kernel + a custom initramfs whose `guestinit` mounts
-  the rootfs over **virtiofs**, loads kernel modules from the Alpine **modloop**,
-  mounts the Docker data image (**btrfs via loop**) and starts `dockerd`.
+- The guest boots an Alpine kernel with a custom initramfs whose `guestinit`:
+  mounts the host share, loads kernel modules from the Alpine **modloop**, mounts the
+  compressed rootfs (squashfs) read-only with a tmpfs overlay, mounts the Docker
+  data image (btrfs via loop) and starts `dockerd`.
 - The daemon proxies `~/.nano/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH, no Kubernetes.
 
