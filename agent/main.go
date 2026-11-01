@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"golang.org/x/sys/unix"
 	"strings"
 	"syscall"
 	"time"
@@ -48,8 +49,41 @@ type response struct {
 }
 
 func main() {
+	go serveVsock()
 	go serveControl()
 	serveDocker()
+}
+
+// serveVsock expõe o mesmo proxy Docker em AF_VSOCK (quando o kernel suporta).
+func serveVsock() {
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err != nil {
+		log.Printf("vsock indisponível: %v", err)
+		return
+	}
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: dockerPort}); err != nil {
+		log.Printf("vsock bind: %v", err)
+		unix.Close(fd)
+		return
+	}
+	if err := unix.Listen(fd, 16); err != nil {
+		log.Printf("vsock listen: %v", err)
+		unix.Close(fd)
+		return
+	}
+	log.Printf("vsock :%d ativo", dockerPort)
+	for {
+		nfd, _, err := unix.Accept(fd)
+		if err != nil {
+			continue
+		}
+		conn, err := net.FileConn(os.NewFile(uintptr(nfd), "vsock"))
+		if err != nil {
+			unix.Close(nfd)
+			continue
+		}
+		go proxy(conn)
+	}
 }
 
 func serveDocker() {

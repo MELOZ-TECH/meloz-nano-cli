@@ -289,7 +289,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			vc, err := net.Dial("tcp", guestAddr())
+			vc, err := dialGuest(vm, 2375)
 			if err != nil {
 				return
 			}
@@ -298,6 +298,16 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			io.Copy(hc, vc)
 		}(hc)
 	}
+}
+
+// dialGuest tenta vsock (se o kernel do guest suportar) e cai para TCP.
+func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
+	if devs := vm.SocketDevices(); len(devs) > 0 {
+		if c, err := devs[0].Connect(uint32(port)); err == nil {
+			return c, nil
+		}
+	}
+	return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
 }
 
 // guestControl fala com o nanoc-agent no guest (:2376) e devolve a resposta.
