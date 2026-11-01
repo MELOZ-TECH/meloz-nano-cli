@@ -12,6 +12,9 @@ import (
 func main() {
 	if len(os.Args) >= 2 {
 		switch os.Args[1] {
+		case "--version", "-v", "version":
+			printVersion()
+			return
 		case "up", "down", "status":
 			if err := cli(os.Args[1]); err != nil {
 				fmt.Fprintln(os.Stderr, "erro:", err)

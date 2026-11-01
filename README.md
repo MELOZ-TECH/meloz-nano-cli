@@ -1,5 +1,10 @@
 # meloz-nano-cli
 
+[![ci](https://github.com/MELOZ-TECH/meloz-nano-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/MELOZ-TECH/meloz-nano-cli/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/MELOZ-TECH/meloz-nano-cli)](https://github.com/MELOZ-TECH/meloz-nano-cli/releases)
+[![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![go](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
+
 A small, CLI-only container runtime for macOS on Apple Silicon.
 It boots a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
 and exposes the Docker socket to your Mac — no GUI, no Kubernetes, no SSH.
@@ -77,7 +82,8 @@ nano CLI ──unix socket──▶ nano daemon ──Virtualization.framework�
 - The daemon proxies `~/.nano/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH, no Kubernetes.
 
-More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). If something fails,
+start with [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ## Tests
 
@@ -98,6 +104,16 @@ virtualization.
   module, so squashfs is used instead.
 - Single VM, fixed 2 vCPU; memory via `NANO_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
+
+## Project docs
+
+- [Architecture](docs/ARCHITECTURE.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Roadmap](ROADMAP.md)
+- [Changelog](CHANGELOG.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## License
 

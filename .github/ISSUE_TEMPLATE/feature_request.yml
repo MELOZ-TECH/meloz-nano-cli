@@ -1,0 +1,38 @@
+name: Feature request
+description: Suggest an idea
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do that is hard today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: How would you like it to work?
+    validations:
+      required: true
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - CLI / UX
+        - VM / guest
+        - networking
+        - storage
+        - documentation
+        - other
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Project constraints
+      options:
+        - label: This does not require a GUI
+        - label: This can be off by default (e.g. Kubernetes)
