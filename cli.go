@@ -166,6 +166,9 @@ func dockerPassthrough(cmd string, args []string) error {
 	if err != nil {
 		return fmt.Errorf("docker CLI não encontrado no PATH")
 	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
 	_, _, docker := paths()
 	c := exec.Command(path, append([]string{cmd}, args...)...)
 	c.Env = append(os.Environ(), "DOCKER_HOST=unix://"+docker)
