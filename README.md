@@ -4,6 +4,7 @@
 [![release](https://img.shields.io/github/v/release/MELOZ-TECH/nano-container)](https://github.com/MELOZ-TECH/nano-container/releases)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![go](https://img.shields.io/badge/go-1.22%2B-00ADD8.svg)](go.mod)
+[![docs](https://img.shields.io/badge/docs-meloz--tech.github.io%2Fnano--container-teal)](https://meloz-tech.github.io/nano-container/)
 
 A small, CLI-only container runtime for macOS on Apple Silicon.
 It boots a minimal Linux VM through **Virtualization.framework**, runs Docker inside it,
@@ -11,6 +12,17 @@ and exposes the Docker socket to your Mac — no GUI, no SSH. Kubernetes is opti
 and off by default.
 
 > Status: **experimental**.
+
+## Demo
+
+`demo/demo.sh` roda a demonstração completa; `demo/nanoc-demo.cast` é uma
+gravação real (asciinema) gerada por `scripts/make-demo-cast.sh`:
+
+```sh
+asciinema play demo/nanoc-demo.cast
+```
+
+Site com a documentação: <https://meloz-tech.github.io/nano-container/>
 
 ## Numbers
 
