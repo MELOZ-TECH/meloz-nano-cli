@@ -30,6 +30,11 @@ nav:
   - Troubleshooting: TROUBLESHOOTING.md
   - Changelog: CHANGELOG.md
   - Contributing: CONTRIBUTING.md
+  - Roadmap: ROADMAP.md
+  - Security: SECURITY.md
+  - Third-party: THIRD_PARTY.md
+  - Code of conduct: CODE_OF_CONDUCT.md
+  - License: LICENSE
 
 markdown_extensions:
   - attr_list

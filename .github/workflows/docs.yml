@@ -26,7 +26,9 @@ jobs:
       - name: Prepare docs
         run: |
           cp README.md docs/index.md
-          cp CHANGELOG.md CONTRIBUTING.md docs/
+          sed -i 's|(docs/|(|g' docs/index.md
+          cp CHANGELOG.md CONTRIBUTING.md ROADMAP.md SECURITY.md \
+             CODE_OF_CONDUCT.md THIRD_PARTY.md LICENSE docs/
       - name: Install mkdocs
         run: pip install mkdocs-material
       - name: Build
