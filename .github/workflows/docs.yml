@@ -27,6 +27,7 @@ jobs:
         run: |
           cp README.md docs/index.md
           sed -i 's|(docs/|(|g' docs/index.md
+          sed -i 's|](go.mod)|](https://github.com/MELOZ-TECH/nano-container/blob/main/go.mod)|g' docs/index.md
           cp CHANGELOG.md CONTRIBUTING.md ROADMAP.md SECURITY.md \
              CODE_OF_CONDUCT.md THIRD_PARTY.md LICENSE docs/
       - name: Install mkdocs
