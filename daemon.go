@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/Code-Hex/vz/v3"
@@ -301,9 +302,12 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 }
 
 // dialGuest tenta vsock (se o kernel do guest suportar) e cai para TCP.
+var vsockOnce sync.Once
+
 func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
 	if devs := vm.SocketDevices(); len(devs) > 0 {
 		if c, err := devs[0].Connect(uint32(port)); err == nil {
+			vsockOnce.Do(func() { fmt.Fprintln(os.Stderr, "transporte do docker: vsock") })
 			return c, nil
 		}
 	}

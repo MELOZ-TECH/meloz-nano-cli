@@ -85,7 +85,8 @@ func main() {
 			_ = os.RemoveAll("/lib/modules/" + u)
 			_ = os.MkdirAll("/lib/modules", 0o755)
 			_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
-			for _, m := range []string{"loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "binfmt_misc", "btrfs", "bridge", "veth",
+			for _, m := range []string{"vsock", "vmw_vsock_virtio_transport",
+				"vmw_vsock_virtio_transport_common", "loop", "vxlan", "udp_tunnel", "ip6_udp_tunnel", "binfmt_misc", "btrfs", "bridge", "veth",
 				"br_netfilter", "nf_tables", "nf_nat", "nf_conntrack",
 				"nf_conntrack_netlink", "nft_chain_nat", "nft_compat",
 				"ip_tables", "x_tables", "iptable_nat", "iptable_filter",
@@ -97,14 +98,11 @@ func main() {
 	}
 
 	// rootfs EROFS read-only + overlay gravável em tmpfs
-	if out, err := losetup("-r", "/dev/loop1", "/data/rootfs.sqfs"); err != nil {
-		fmt.Fprintf(os.Stderr, "guestinit: losetup rootfs: %v %s\n", err, out)
+	if err := mountRootfs(); err != nil {
+		fmt.Fprintf(os.Stderr, "guestinit: rootfs: %v\n", err)
 		poweroff()
 	}
-	if err := mount("/dev/loop1", "/ro", "squashfs", unix.MS_RDONLY, ""); err != nil {
-		fmt.Fprintln(os.Stderr, "guestinit: não consegui montar o rootfs squashfs")
-		poweroff()
-	}
+
 	mount("tmpfs", "/rw", "tmpfs", 0, "")
 	_ = os.MkdirAll("/rw/upper", 0o755)
 	_ = os.MkdirAll("/rw/work", 0o755)
@@ -138,6 +136,38 @@ func main() {
 		fmt.Fprintf(os.Stderr, "guestinit: guest script: %v\n", err)
 	}
 	poweroff()
+}
+
+// mountRootfs monta o rootfs comprimido: EROFS se o kernel suportar, senão squashfs.
+func mountRootfs() error {
+	candidates := []struct{ img, fstype string }{
+		{"/data/rootfs.erofs", "erofs"},
+		{"/data/rootfs.sqfs", "squashfs"},
+	}
+	var lastErr error
+	for _, c := range candidates {
+		if _, err := os.Stat(c.img); err != nil {
+			continue
+		}
+		if out, err := losetup("-r", "/dev/loop1", c.img); err != nil {
+			lastErr = fmt.Errorf("losetup %s: %v %s", c.img, err, out)
+			continue
+		}
+		if err := mount("/dev/loop1", "/ro", c.fstype, unix.MS_RDONLY, ""); err != nil {
+			lastErr = fmt.Errorf("mount %s: %v", c.fstype, err)
+			_ = losetupDetach("/dev/loop1")
+			continue
+		}
+		return nil
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("nenhum rootfs encontrado")
+	}
+	return lastErr
+}
+
+func losetupDetach(dev string) error {
+	return exec.Command("/bin/busybox", "losetup", "-d", dev).Run()
 }
 
 func losetup(args ...string) ([]byte, error) {

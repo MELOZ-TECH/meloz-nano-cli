@@ -4,6 +4,16 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-11-01
+
+### Added
+
+- Docker proxy now uses **virtio-vsock** (fallback to TCP); the guest agent
+  listens on both transports.
+- `scripts/build-kernel.sh` and `scripts/package-kernel.sh` for a future custom
+  kernel with EROFS.
+- Guest init tries an EROFS rootfs first and falls back to squashfs.
+
 ## [0.9.0] - 2026-11-01
 
 ### Added
