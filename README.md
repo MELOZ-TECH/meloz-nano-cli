@@ -195,6 +195,18 @@ virtualization.
 - [Security policy](SECURITY.md)
 - [Code of conduct](CODE_OF_CONDUCT.md)
 
+## Built with
+
+This project stands on open-source work: [Code-Hex/vz](https://github.com/Code-Hex/vz)
+(Virtualization.framework bindings), the [Linux kernel](https://kernel.org) and
+[Alpine Linux](https://alpinelinux.org), [Docker Engine](https://github.com/moby/moby)
+and [containerd](https://github.com/containerd/containerd),
+[BusyBox](https://busybox.net), [QEMU](https://www.qemu.org),
+[OpenSSH](https://www.openssh.com) and [k3s](https://github.com/k3s-io/k3s).
+
+The release assets bundle GPL-2.0 binaries; see [THIRD_PARTY.md](THIRD_PARTY.md)
+for the full list, licenses and source locations.
+
 ## License
 
 Apache-2.0.
