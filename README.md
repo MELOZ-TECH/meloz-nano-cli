@@ -12,6 +12,44 @@ and off by default.
 
 > Status: **experimental**.
 
+## Numbers
+
+Measured on an Apple Silicon Mac with `./scripts/bench.sh` (median of three
+clean boots, Docker image already pulled):
+
+| Metric | Value |
+|---|---|
+| Boot (`nanoc up` until ready) | **17.4 s** |
+| Guest RAM (total) | **968 MB** |
+| Guest RAM available at idle | 676 MB |
+| First `docker run` (local image) | **2.0 s** |
+| `nanoc` binary | **6.1 MB** |
+| EROFS rootfs | 124 MB |
+| `data.img` (sparse, grows with images) | 8 GB max |
+| State on disk after pulls | ~1.6 GB |
+
+Run it yourself:
+
+```sh
+./scripts/bench.sh
+```
+
+## How it compares
+
+Approximate, for orientation only — measure your own workload.
+
+| | **nano-container** | Docker Desktop | Colima | Podman machine |
+|---|---|---|---|---|
+| Interface | CLI only | GUI + CLI | CLI | CLI |
+| License | Apache-2.0 | proprietary (paid for larger orgs) | MIT | Apache-2.0 |
+| VM memory (default) | **1 GB** | 2 GB+ | 2 GB | 1–2 GB |
+| Docker API socket | yes | yes | yes | compatible |
+| Kubernetes | optional k3s, off by default | optional | optional k3s | no |
+| `linux/amd64` images | qemu/binfmt (slow) | Rosetta (fast) | qemu (slow) | qemu (slow) |
+| Host bind mounts | virtiofs | virtiofs | sshfs/virtiofs | virtiofs |
+| Extra Linux machines | `nanoc machine` | no | no | no |
+| Runs on | Apple Silicon | Intel + Apple Silicon | Intel + Apple Silicon | Intel + Apple Silicon |
+
 ## Why
 
 Most container runtimes for macOS bring a full Linux distribution, a GUI, an SSH
@@ -23,7 +61,7 @@ needs: a tiny guest, one daemon, one CLI, and a socket.
 - Compressed read-only root filesystem with a writable overlay
 - Docker data on a btrfs image, `overlay2` storage driver
 - Bridge networking with published ports working inside the VM
-- Boot to a usable Docker socket in ~6 seconds
+- Boot to a usable Docker socket in ~17 seconds (measured, see [Numbers](#numbers))
 
 ## Requirements
 
