@@ -177,8 +177,8 @@ virtualization.
   squashfs when the kernel has no EROFS support).
 - The default kernel is Alpine **edge** (`6.18.x-virt`), which ships EROFS and
   vsock modules. `ALPINE_CHANNEL=3.22 make bootstrap` uses the stable kernel.
-- Docker traffic uses TCP by default; `NANOC_VSOCK=1 nanoc up` switches the proxy
-  to virtio-vsock (works on the stable kernel; streaming is unstable on edge).
+- Docker traffic uses **virtio-vsock** by default (with a TCP fallback):
+  `NANOC_VSOCK=0 nanoc up` forces TCP.
 - Single VM, fixed 2 vCPU; memory via `NANOC_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 

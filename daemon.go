@@ -310,7 +310,8 @@ func proxyCopy(a, b net.Conn) {
 		if cw, ok := b.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {
-			_ = b.Close()
+			// sem half-close: dá um tempo curto para o outro sentido drenar
+			_ = a.SetReadDeadline(time.Now().Add(2 * time.Second))
 		}
 	}()
 	go func() {
@@ -319,7 +320,7 @@ func proxyCopy(a, b net.Conn) {
 		if cw, ok := a.(interface{ CloseWrite() error }); ok {
 			_ = cw.CloseWrite()
 		} else {
-			_ = a.Close()
+			_ = b.SetReadDeadline(time.Now().Add(2 * time.Second))
 		}
 	}()
 	wg.Wait()
@@ -329,7 +330,7 @@ func proxyCopy(a, b net.Conn) {
 var vsockOnce sync.Once
 
 func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
-	if os.Getenv("NANOC_VSOCK") != "1" {
+	if os.Getenv("NANOC_VSOCK") == "0" {
 		return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
 	}
 	if devs := vm.SocketDevices(); len(devs) > 0 {

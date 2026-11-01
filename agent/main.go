@@ -86,8 +86,12 @@ func serveVsock() {
 				return
 			}
 			defer up.Close()
-			go io.Copy(up, f)
-			io.Copy(f, up)
+			go func() {
+				_, _ = io.Copy(up, f)
+				_ = unix.Shutdown(int(f.Fd()), unix.SHUT_WR)
+			}()
+			_, _ = io.Copy(f, up)
+			_ = unix.Shutdown(int(f.Fd()), unix.SHUT_RDWR)
 		}(f)
 	}
 }
