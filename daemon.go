@@ -53,6 +53,17 @@ func lockDaemon(ctlPath string) error {
 	return nil
 }
 
+// daemonAlive diz se algum processo segura o lock do daemon, ou seja, se há um
+// daemon vivo, respondendo ou não.
+func daemonAlive(ctlPath string) bool {
+	f, err := os.OpenFile(ctlPath+".lock", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil
+}
+
 func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	if err := lockDaemon(ctlPath); err != nil {
 		return err

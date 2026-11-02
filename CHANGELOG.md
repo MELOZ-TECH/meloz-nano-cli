@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `nanoc up` no longer kills a running daemon that is slow to answer. It sent
+  `SIGKILL` to the PID in `nanoc.sock.pid` whenever `status` took more than
+  500 ms (a busy Mac, or a VM still booting), taking every container down with
+  no line in `daemon.log`. It now checks the daemon lock: if a daemon holds it,
+  `up` waits for it; if not, the stale PID file is removed without signalling
+  a PID that may belong to another process.
+
 ## [0.16.0] - 2026-11-02
 
 ### Changed
