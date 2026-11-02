@@ -191,11 +191,8 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		return fmt.Errorf("config inválida: %v", err)
 	}
 
-	vm, err := vz.NewVirtualMachine(cfg)
+	vm, err := startVM(cfg)
 	if err != nil {
-		return err
-	}
-	if err := vm.Start(); err != nil {
 		return err
 	}
 	mem := newMemController(vm)
@@ -526,6 +523,27 @@ func ensureDataImage(path string) (bool, error) {
 	}
 	defer f.Close()
 	return true, f.Truncate(8 << 30)
+}
+
+// startVM cria e liga a VM. O processo da VM anterior ainda segura os discos por
+// alguns segundos depois que o daemon sai, e num `nanoc down && nanoc up` o Start
+// falhava com "The storage device attachment is invalid". Tenta de novo por até 15 s.
+func startVM(cfg *vz.VirtualMachineConfiguration) (*vz.VirtualMachine, error) {
+	var err error
+	for i := 0; i < 30; i++ {
+		var vm *vz.VirtualMachine
+		if vm, err = vz.NewVirtualMachine(cfg); err == nil {
+			if err = vm.Start(); err == nil {
+				return vm, nil
+			}
+		}
+		if i == 0 {
+			fmt.Fprintf(os.Stderr, "%s VM não ligou, tentando de novo por 15 s: %v\n",
+				time.Now().Format(time.RFC3339), err)
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return nil, err
 }
 
 // dataDisk anexa o data.img como virtio-blk. fsync em vez de F_FULLFSYNC: o mesmo

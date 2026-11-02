@@ -34,14 +34,16 @@ the Docker socket to the host.
      ├─ mount /proc /sys /dev
      ├─ modprobe squashfs, virtiofs, virtio_net, overlay, loop
      ├─ mount share orbdata at /data
-     ├─ mount modloop (squashfs) and point /lib/modules at it
+     ├─ mount modloop (squashfs) over /lib/modules/<version>
      ├─ modprobe ext4, bridge, veth, br_netfilter, nf_tables, iptables…
      ├─ losetup /data/rootfs.sqfs → /ro (squashfs, read-only)
      ├─ tmpfs /rw + overlay(lower=/ro, upper=/rw/upper) → /newroot
-     ├─ bind /data into /newroot/data, mount pseudo-fs inside
-     └─ chroot /newroot and exec /opt/nanoc-guest.sh
+     ├─ bind /data and /lib/modules into /newroot, mount pseudo-fs inside
+     ├─ delete the initramfs files (they would stay in RAM otherwise)
+     └─ move /newroot over / and exec /opt/nanoc-guest.sh
 
 4. guest boot script
+     ├─ memory: sysctls, MGLRU, THP, zram swap (see Memory)
      ├─ network: eth0 up, 192.168.64.2/24, default route 192.168.64.1
      ├─ mount /dev/vdb (data.img, ext4) at /var/lib/docker
      ├─ dockerd --storage-driver=overlay2
@@ -56,7 +58,7 @@ the Docker socket to the host.
 | Data | Where | Format |
 |---|---|---|
 | Kernel | `assets/Image` | raw arm64 `Image` extracted from the Alpine EFI zboot |
-| Initramfs | `assets/initramfs.cpio.gz` | gzip cpio with `guestinit` |
+| Initramfs | `assets/initramfs.cpio.gz` | Alpine's `initramfs-virt` + `guestinit` (10 MB gzip) |
 | Modules | `assets/modloop-virt` | squashfs, attached read-only |
 | Guest rootfs | `~/.nanoc/rootfs.sqfs` | squashfs + zstd (269 MB dir → 68 MB) |
 | Docker data | `~/.nanoc/data.img` | ext4 image, attached as virtio-blk |
@@ -93,6 +95,27 @@ target reached, not the ceiling. Shrinking still helps, since pages held by the
 balloon go cold and macOS compresses or swaps them first. The kernel runs with
 `init_on_alloc=0` so inflating the balloon does not touch pages the guest never
 used. `NANOC_MEM_DYNAMIC=0` turns this off and gives the guest the full ceiling.
+
+Since touched pages never go back, the guest is tuned to touch as few as
+possible and to compress what goes cold instead of asking for more (the same
+settings OrbStack applies in its guest, except swappiness):
+
+| Setting | Value | Why |
+|---|---|---|
+| zram swap | up to the guest RAM, lz4, priority 32767 | cold pages are compressed in place instead of growing the balloon target (`nanoc.nozram` on the cmdline turns it off) |
+| `vm.swappiness` | 100 | prefer compressing cold anonymous pages over asking for more RAM (OrbStack uses 20, but it can hand memory back to macOS and nanoc cannot) |
+| `vm.page-cluster` | 0 | zram has no seek cost, so swap in one page at a time |
+| `vm.overcommit_memory` | 1 | Redis and similar images expect it |
+| `vm.watermark_boost_factor` | 0 | no extra reclaim after fragmentation events |
+| `vm.compaction_proactiveness` | 0 | no background compaction touching pages |
+| MGLRU | `min_ttl_ms=500` | the working set of the last 500 ms is never evicted |
+| THP | 2 MB on `madvise`, 16 KB `always` | with 2 MB `always`, touching 4 KB can commit 2 MB on the Mac |
+
+The initramfs is Alpine's own plus `guestinit`; the other modules come from the
+modloop disk. `guestinit` deletes the initramfs before switching root, like
+busybox `switch_root`, because the initramfs is a RAM filesystem that would
+otherwise stay allocated for the life of the VM (it used to be 97 MB with every
+module copied in).
 
 - Idle guest: ~92 MB used (measured with `free -m` at 2 GiB).
 - Host daemon RSS: ~9-10 MB.
