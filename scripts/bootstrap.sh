@@ -91,11 +91,11 @@ if [ ! -f "$STATE/rootfs.erofs" ] || [ -n "${FORCE_ROOTFS:-}" ]; then
   echo "ok rootfs.erofs"
 fi
 
-# disco de dados btrfs
+# disco de dados ext4 (o guest monta com -t ext4)
 mkdir -p "$STATE"
 if [ ! -f "$STATE/data.img" ]; then
   docker run --rm --privileged -v "$STATE:/out" alpine:3.22 sh -c \
-    'apk add -q btrfs-progs >/dev/null 2>&1; truncate -s 8G /out/data.img; mkfs.btrfs -q -f /out/data.img'
+    'apk add -q e2fsprogs >/dev/null 2>&1; truncate -s 8G /out/data.img; mkfs.ext4 -q -F /out/data.img'
   echo "ok data.img"
 fi
 

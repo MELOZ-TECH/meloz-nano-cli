@@ -19,16 +19,17 @@ func TestEnvOr(t *testing.T) {
 
 func TestMemBytes(t *testing.T) {
 	t.Setenv("NANOC_MEM_MB", "")
-	if got := memBytes(); got != 1024*1024*1024 {
-		t.Fatalf("default deveria ser 1 GiB, veio %d", got)
+	def := memBytes()
+	if def < 2048*mib || def > 8192*mib {
+		t.Fatalf("teto padrão deveria ficar entre 2 e 8 GiB, veio %d", def)
 	}
 	t.Setenv("NANOC_MEM_MB", "2048")
-	if got := memBytes(); got != 2*1024*1024*1024 {
+	if got := memBytes(); got != 2048*mib {
 		t.Fatalf("esperava 2 GiB, veio %d", got)
 	}
 	t.Setenv("NANOC_MEM_MB", "invalido")
-	if got := memBytes(); got != 1024*1024*1024 {
-		t.Fatalf("valor inválido deveria cair no default, veio %d", got)
+	if got := memBytes(); got != def {
+		t.Fatalf("valor inválido deveria cair no padrão, veio %d", got)
 	}
 }
 

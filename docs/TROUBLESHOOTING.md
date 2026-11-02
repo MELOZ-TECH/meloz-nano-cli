@@ -11,7 +11,7 @@ make sign
 This creates an ad-hoc signature with `build/virt.entitlements`. Rebuilding the
 binary without signing drops the entitlement.
 
-## `guest não respondeu em 192.168.64.2:2375`
+## `guest não respondeu na porta 2375`
 
 The VM booted but Docker did not come up. Check the guest log written to the host
 share:

@@ -83,7 +83,7 @@ Approximate, for orientation only — measure your own workload.
 |---|---|---|---|---|
 | Interface | CLI only | GUI + CLI | CLI | CLI |
 | License | Apache-2.0 | proprietary (paid for larger orgs) | MIT | Apache-2.0 |
-| VM memory (default) | **1 GB** | 2 GB+ | 2 GB | 1–2 GB |
+| VM memory (default) | **1 GB, grows on demand** | 2 GB+ | 2 GB | 1–2 GB |
 | Docker API socket | yes | yes | yes | compatible |
 | Kubernetes | optional k3s, off by default | optional | optional k3s | no |
 | `linux/amd64` images | qemu/binfmt (slow) | Rosetta (fast) | qemu (slow) | qemu (slow) |
@@ -100,7 +100,7 @@ needs: a tiny guest, one daemon, one CLI, and a socket.
 - VM with 1 GiB of RAM (configurable), 2 vCPU
 - Alpine guest with its own PID 1 (`guestinit`), no systemd, no cloud-init, no sshd
 - Compressed read-only root filesystem with a writable overlay
-- Docker data on a btrfs image, `overlay2` storage driver
+- Docker data on an ext4 image, `overlay2` storage driver
 - Bridge networking with published ports working inside the VM
 - Boot to a usable Docker socket in ~17 seconds (measured, see [Numbers](#numbers))
 
@@ -133,7 +133,7 @@ docker run --rm alpine:3.22 echo hello
 ```
 
 `nanoc status` reports the running daemon. The Docker socket lives at
-`~/.nanoc/docker.sock` and the state (btrfs `data.img`, compressed rootfs) at `~/.nanoc/`.
+`~/.nanoc/docker.sock` and the state (ext4 `data.img`, compressed rootfs) at `~/.nanoc/`.
 
 ## Commands
 
@@ -152,8 +152,10 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc k8s status` | shows whether Kubernetes is running |
 | `nanoc k8s reset` | removes the k3s data (use if the cluster is corrupted) |
 
-Environment variables: `NANOC_MEM_MB` (VM memory, default `1024`), `NANOC_ROOTFS`,
-`NANOC_DATA`, `NANOC_MODLOOP`, `NANOC_STATE`.
+Environment variables: `NANOC_MEM_MB` (memory ceiling, default half the Mac's RAM,
+2–8 GB), `NANOC_MEM_MIN_MB` (starting memory, default `1024`), `NANOC_MEM_DYNAMIC=0`
+(fixed memory), `NANOC_DATA_BLK=0` (data image via loop instead of virtio-blk),
+`NANOC_ROOTFS`, `NANOC_DATA`, `NANOC_MODLOOP`, `NANOC_STATE`.
 
 ## How it works
 
@@ -176,7 +178,7 @@ nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework
 - The guest boots an Alpine kernel with a custom initramfs whose `guestinit`:
   mounts the host share, loads kernel modules from the Alpine **modloop**, mounts the
   compressed rootfs (squashfs) read-only with a tmpfs overlay, mounts the Docker
-  data image (btrfs via loop) and starts `dockerd`.
+  data image (ext4 on a virtio-blk disk) and starts `dockerd`.
 - The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH. Kubernetes is opt-in.
 
@@ -244,7 +246,7 @@ nanoc k8s disable
 ```
 
 The API server is proxied from `127.0.0.1:6443` on the host to the guest, so
-kubectl works out of the box. Cluster state lives on the btrfs data image and
+kubectl works out of the box. Cluster state lives on the ext4 data image and
 survives restarts until `nanoc k8s reset`.
 
 More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). If something fails,
@@ -268,9 +270,11 @@ virtualization.
   squashfs when the kernel has no EROFS support).
 - The default kernel is Alpine **edge** (`6.18.x-virt`), which ships EROFS and
   vsock modules. `ALPINE_CHANNEL=3.22 make bootstrap` uses the stable kernel.
-- Docker traffic uses **virtio-vsock** by default (with a TCP fallback):
-  `NANOC_VSOCK=0 nanoc up` forces TCP.
-- Single VM, fixed 2 vCPU; memory via `NANOC_MEM_MB`.
+- Docker and control traffic use **virtio-vsock** only; the guest agent does not
+  listen on TCP. `NANOC_VSOCK=0 nanoc up` switches to TCP for debugging, which
+  exposes the agent to every process on the Mac.
+- Single VM, fixed 2 vCPU. Memory starts at 1 GB and grows on demand up to
+  `NANOC_MEM_MB`; macOS does not get it back until `nanoc down`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 
 ## Project docs

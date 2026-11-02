@@ -112,7 +112,7 @@ func (p *portForward) serve(ln net.Listener, port int) {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			gc, err := net.DialTimeout("tcp", fmt.Sprintf("192.168.64.2:%d", port), 5*time.Second)
+			gc, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
 			if err != nil {
 				return
 			}

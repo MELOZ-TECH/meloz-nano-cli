@@ -4,6 +4,43 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-11-01
+
+### Added
+
+- Dynamic memory: the VM is created with a ceiling (`NANOC_MEM_MB`, default half
+  the Mac's RAM, 2–8 GB) and the memory balloon holds the guest at 1 GB
+  (`NANOC_MEM_MIN_MB`). The daemon grows it by 512 MB when the guest runs short
+  and shrinks it after a minute of slack. `nanoc status` shows the current size.
+  macOS does not get touched memory back until `nanoc down` (the
+  Virtualization.framework balloon has no free page reporting).
+  `NANOC_MEM_DYNAMIC=0` gives the guest the full ceiling.
+
+### Changed
+
+- The Docker data image is attached as a virtio-blk disk instead of a loop
+  device over virtiofs. Reading 256 MB cold went from 2–8 s to 0.15–0.3 s.
+  `NANOC_DATA_BLK=0` keeps the old mount.
+- The kernel boots with `init_on_alloc=0` and `psi=1`.
+
+### Security
+
+- The guest agent no longer listens on TCP 2375 (Docker API) and 2376 (control,
+  including `run`/`exec` as root). Any process on the Mac and any VM on the NAT
+  network could reach them. Both are served over vsock only; `NANOC_VSOCK=0`
+  turns TCP back on for debugging.
+
+### Fixed
+
+- `scripts/bootstrap.sh` created a btrfs data image, but the guest mounts ext4.
+- Port forwarding no longer hardcodes the guest IP.
+- Docs said the data image was btrfs; it is ext4.
+
+### Upgrade
+
+Run `nanoc down && nanoc bootstrap && nanoc up`: the agent, guest script and
+`guestinit` changed. A data image from 0.14.0 is reused as is.
+
 ## [0.14.0] - 2026-11-01
 
 ### Fixed

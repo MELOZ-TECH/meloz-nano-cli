@@ -28,8 +28,11 @@ func guestIP() string {
 	return "192.168.64.2"
 }
 
-func guestAddr() string        { return guestIP() + ":2375" }
-func guestAddrControl() string { return guestIP() + ":2376" }
+// portas vsock do nanoc-agent no guest
+const (
+	guestDockerPort  = 2375
+	guestControlPort = 2376
+)
 
 // daemonLock fica aberto enquanto o daemon vive: o flock some junto com o processo.
 var daemonLock *os.File
@@ -58,7 +61,11 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
 
-	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit nanoc.ip=" + guestIP()
+	// init_on_alloc=0: com o padrão do Alpine o kernel zera cada página alocada, e
+	// o balão, ao inflar, encostava em páginas que o guest nunca usou (a VM passava
+	// a ocupar o teto inteiro no Mac). psi=1 liga /proc/pressure para o controlador
+	// de memória.
+	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit init_on_alloc=0 psi=1 nanoc.ip=" + guestIP()
 	if v := os.Getenv("NANOC_DATA_REL"); v != "" {
 		cmdline += " nanoc.data=" + v
 	}
@@ -68,6 +75,31 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	noDocker := os.Getenv("NANOC_NO_DOCKER") == "1"
 	if noDocker {
 		cmdline += " nanoc.nodocker=1"
+	}
+	if tcpTransport() {
+		cmdline += " nanoc.tcp=1"
+	}
+
+	dataDir := filepath.Dir(data)
+	if v := os.Getenv("NANOC_SHARE_DIR"); v != "" {
+		dataDir = v
+	}
+	_ = os.MkdirAll(dataDir, 0o755)
+	dataPath := filepath.Join(dataDir, envOr("NANOC_DATA_REL", filepath.Base(data)))
+	dataBlk := os.Getenv("NANOC_DATA_BLK") != "0"
+	if dataBlk {
+		created, err := ensureDataImage(dataPath)
+		if err != nil {
+			return err
+		}
+		dev := "vda"
+		if _, err := os.Stat(modloop); err == nil {
+			dev = "vdb" // o modloop vem antes
+		}
+		cmdline += " nanoc.datadev=" + dev
+		if created {
+			cmdline += " nanoc.datanew=1"
+		}
 	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine(cmdline),
@@ -103,7 +135,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 	cfg.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{sockCfg})
 
-	// disco read-only com os módulos do kernel (modloop)
+	// discos: modloop read-only (vda) e, por padrão, o data.img direto como
+	// virtio-blk (vdb). O loop sobre virtiofs fica para NANOC_DATA_BLK=0.
+	var disks []vz.StorageDeviceConfiguration
 	if _, err := os.Stat(modloop); err == nil {
 		att, err := vz.NewDiskImageStorageDeviceAttachment(modloop, true)
 		if err != nil {
@@ -113,16 +147,19 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		if err != nil {
 			return err
 		}
-		cfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{blk})
+		disks = append(disks, blk)
 	}
+	if dataBlk {
+		blk, err := dataDisk(dataPath)
+		if err != nil {
+			return err
+		}
+		disks = append(disks, blk)
+	}
+	cfg.SetStorageDevicesVirtualMachineConfiguration(disks)
 
-	// share de dados (rootfs.erofs + data.img) — o rootfs é EROFS read-only
+	// share de dados (rootfs.erofs; data.img só no modo loop) — o rootfs é EROFS read-only
 	shares := make([]vz.DirectorySharingDeviceConfiguration, 0)
-	dataDir := filepath.Dir(data)
-	if v := os.Getenv("NANOC_SHARE_DIR"); v != "" {
-		dataDir = v
-	}
-	_ = os.MkdirAll(dataDir, 0o755)
 	if dataShare, err := newShare("orbdata", dataDir); err == nil {
 		shares = append(shares, dataShare)
 	}
@@ -161,16 +198,17 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	if err := vm.Start(); err != nil {
 		return err
 	}
+	mem := newMemController(vm)
 
 	// espera o guest responder (docker ou agente de controle)
-	waitAddr := guestAddr()
+	waitPort := guestDockerPort
 	if noDocker {
-		waitAddr = guestAddrControl()
+		waitPort = guestControlPort
 	}
 	var dialErr error
 	for i := 0; i < 90; i++ {
 		time.Sleep(time.Second)
-		c, err := net.DialTimeout("tcp", waitAddr, time.Second)
+		c, err := dialGuest(vm, waitPort)
 		if err != nil {
 			dialErr = err
 			continue
@@ -180,7 +218,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		break
 	}
 	if dialErr != nil {
-		return fmt.Errorf("guest não respondeu em %s: %v", waitAddr, dialErr)
+		return fmt.Errorf("guest não respondeu na porta %d: %v", waitPort, dialErr)
 	}
 
 	var ln net.Listener
@@ -234,6 +272,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}()
 
 	fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
+	if mem != nil {
+		go mem.run()
+	}
 
 	// portas publicadas pelo Docker no guest ficam acessíveis em 127.0.0.1:<porta>
 	pf := newPortForward()
@@ -254,22 +295,30 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 					Action    string   `json:"action"`
 					Container string   `json:"container"`
 					Argv      []string `json:"argv"`
+					MB        uint64   `json:"mb"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active(), "bind": listenAddr()}
+				for k, v := range mem.status() {
+					resp[k] = v
+				}
 				if req.Cmd == "k8s" {
-					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
+					_ = json.NewEncoder(c).Encode(guestControl(vm, req.Action))
+					return
+				}
+				if req.Cmd == "balloon" {
+					_ = json.NewEncoder(c).Encode(balloonCmd(mem, req.MB))
 					return
 				}
 				if req.Cmd == "run" {
-					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+					_ = json.NewEncoder(c).Encode(guestControlRaw(vm, map[string]any{
 						"cmd":  "run",
 						"argv": req.Argv,
 					}))
 					return
 				}
 				if req.Cmd == "exec" {
-					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+					_ = json.NewEncoder(c).Encode(guestControlRaw(vm, map[string]any{
 						"cmd":       "exec",
 						"container": req.Container,
 						"argv":      req.Argv,
@@ -349,7 +398,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			vc, err := dialGuest(vm, 2375)
+			vc, err := dialGuest(vm, guestDockerPort)
 			if err != nil {
 				return
 			}
@@ -401,33 +450,34 @@ func proxyCopy(a, b net.Conn) {
 	wg.Wait()
 }
 
-// dialGuest tenta vsock (se o kernel do guest suportar) e cai para TCP.
-var vsockOnce sync.Once
+// tcpTransport: NANOC_VSOCK=0 troca o vsock por TCP na rede NAT (só para depuração:
+// o agente fica aberto para qualquer processo do Mac).
+func tcpTransport() bool { return os.Getenv("NANOC_VSOCK") == "0" }
 
+// dialGuest conecta numa porta do nanoc-agent. Por vsock, que só o processo dono
+// da VM alcança; o agente não escuta TCP a menos que tcpTransport() esteja ligado.
 func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
-	if os.Getenv("NANOC_VSOCK") == "0" {
+	if tcpTransport() {
 		return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
 	}
-	if devs := vm.SocketDevices(); len(devs) > 0 {
-		if c, err := devs[0].Connect(uint32(port)); err == nil {
-			vsockOnce.Do(func() { fmt.Fprintln(os.Stderr, "transporte do docker: vsock") })
-			return c, nil
-		}
+	devs := vm.SocketDevices()
+	if len(devs) == 0 {
+		return nil, fmt.Errorf("VM sem dispositivo vsock")
 	}
-	return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
+	return devs[0].Connect(uint32(port))
 }
 
-// guestControl fala com o nanoc-agent no guest (:2376) e devolve a resposta.
-func guestControl(action string) map[string]any {
-	return guestControlRaw(map[string]any{"cmd": "k8s-" + action})
+// guestControl fala com o nanoc-agent no guest (porta 2376) e devolve a resposta.
+func guestControl(vm *vz.VirtualMachine, action string) map[string]any {
+	return guestControlRaw(vm, map[string]any{"cmd": "k8s-" + action})
 }
 
-func guestControlRaw(payload map[string]any) map[string]any {
+func guestControlRaw(vm *vz.VirtualMachine, payload map[string]any) map[string]any {
 	out := map[string]any{"ok": false, "message": "guest sem controle"}
 	var c net.Conn
 	var err error
 	for i := 0; i < 15; i++ {
-		c, err = net.DialTimeout("tcp", guestAddrControl(), 2*time.Second)
+		c, err = dialGuest(vm, guestControlPort)
 		if err == nil {
 			break
 		}
@@ -462,4 +512,29 @@ func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {
 	}
 	fs.SetDirectoryShare(one)
 	return fs, nil
+}
+
+// ensureDataImage cria o data.img esparso (8 GiB) se ele não existir. O guest só
+// formata quando recebe nanoc.datanew=1, para nunca apagar um disco existente.
+func ensureDataImage(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	return true, f.Truncate(8 << 30)
+}
+
+// dataDisk anexa o data.img como virtio-blk. fsync em vez de F_FULLFSYNC: o mesmo
+// compromisso de durabilidade do loop sobre virtiofs, sem a ida e volta do FUSE.
+func dataDisk(path string) (*vz.VirtioBlockDeviceConfiguration, error) {
+	att, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false,
+		vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeFsync)
+	if err != nil {
+		return nil, err
+	}
+	return vz.NewVirtioBlockDeviceConfiguration(att)
 }

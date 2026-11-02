@@ -1,7 +1,9 @@
 //go:build linux
 
-// nanoc-agent: roda no guest. Expõe o docker.sock em :2375 e um pequeno canal de
-// controle em :2376 (info e ciclo de vida opcional do Kubernetes/k3s).
+// nanoc-agent: roda no guest. Expõe o docker.sock na porta vsock 2375 e um pequeno
+// canal de controle na 2376 (info, run/exec e ciclo de vida opcional do k3s).
+// Só por vsock: em TCP, qualquer processo do Mac ou VM da rede NAT teria root no
+// guest. TCP só com nanoc.tcp=1 no cmdline (NANOC_VSOCK=0 no host, para depuração).
 package main
 
 import (
@@ -9,11 +11,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"golang.org/x/sys/unix"
+	"io"
 	"log"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,32 +49,45 @@ type response struct {
 	Version  string `json:"version,omitempty"`
 	Output   string `json:"output,omitempty"`
 	ExitCode int    `json:"exit_code,omitempty"`
+
+	MemTotalKB uint64  `json:"mem_total_kb,omitempty"`
+	MemAvailKB uint64  `json:"mem_avail_kb,omitempty"`
+	PSISome10  float64 `json:"psi_some_avg10,omitempty"`
 }
 
 func main() {
-	go serveVsock()
-	go serveControl()
-	serveDocker()
+	if tcpEnabled() {
+		go serveTCP(controlPort, func(c net.Conn) { handleControl(c) })
+		go serveTCP(dockerPort, proxy)
+	}
+	go serveVsock(controlPort, handleControl)
+	serveVsock(dockerPort, proxyDocker)
 }
 
-// serveVsock expõe o mesmo proxy Docker em AF_VSOCK (quando o kernel suporta).
-func serveVsock() {
+// tcpEnabled: TCP só quando o host pediu (nanoc.tcp=1 no cmdline do kernel).
+func tcpEnabled() bool {
+	b, _ := os.ReadFile("/proc/cmdline")
+	for _, f := range strings.Fields(string(b)) {
+		if f == "nanoc.tcp=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// serveVsock atende uma porta AF_VSOCK e entrega cada conexão a handle.
+func serveVsock(port uint32, handle func(io.ReadWriteCloser)) {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
-		log.Printf("vsock indisponível: %v", err)
-		return
+		log.Fatalf("vsock indisponível: %v", err)
 	}
-	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: dockerPort}); err != nil {
-		log.Printf("vsock bind: %v", err)
-		unix.Close(fd)
-		return
+	if err := unix.Bind(fd, &unix.SockaddrVM{CID: unix.VMADDR_CID_ANY, Port: port}); err != nil {
+		log.Fatalf("vsock bind :%d: %v", port, err)
 	}
 	if err := unix.Listen(fd, 16); err != nil {
-		log.Printf("vsock listen: %v", err)
-		unix.Close(fd)
-		return
+		log.Fatalf("vsock listen :%d: %v", port, err)
 	}
-	log.Printf("vsock :%d ativo", dockerPort)
+	log.Printf("vsock :%d ativo", port)
 	for {
 		nfd, _, err := unix.Accept(fd)
 		if err != nil {
@@ -83,17 +100,18 @@ func serveVsock() {
 			unix.Close(nfd)
 			continue
 		}
-		vc := &vsockConn{File: os.NewFile(uintptr(nfd), "vsock")}
-		go func(vc *vsockConn) {
-			up, err := net.Dial("unix", dockerSock)
-			if err != nil {
-				log.Printf("vsock dial docker: %v", err)
-				vc.Close()
-				return
-			}
-			relay(vc, up)
-		}(vc)
+		go handle(&vsockConn{File: os.NewFile(uintptr(nfd), "vsock")})
 	}
+}
+
+func proxyDocker(c io.ReadWriteCloser) {
+	up, err := net.Dial("unix", dockerSock)
+	if err != nil {
+		log.Printf("dial docker: %v", err)
+		c.Close()
+		return
+	}
+	relay(c, up)
 }
 
 // vsockConn adiciona half-close a um socket AF_VSOCK aberto como *os.File.
@@ -112,18 +130,18 @@ func (v *vsockConn) CloseWrite() error {
 	return serr
 }
 
-func serveDocker() {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", dockerPort))
+func serveTCP(port int, handle func(net.Conn)) {
+	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
-		log.Fatalf("listen docker: %v", err)
+		log.Fatalf("listen tcp :%d: %v", port, err)
 	}
-	log.Printf("docker proxy em :%d -> %s", dockerPort, dockerSock)
+	log.Printf("tcp :%d ativo (nanoc.tcp=1)", port)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			continue
 		}
-		go proxy(conn)
+		go handle(conn)
 	}
 }
 
@@ -141,22 +159,7 @@ func proxy(conn net.Conn) {
 	relay(conn, up)
 }
 
-func serveControl() {
-	ln, err := net.Listen("tcp", fmt.Sprintf(":%d", controlPort))
-	if err != nil {
-		log.Fatalf("listen control: %v", err)
-	}
-	log.Printf("controle em :%d", controlPort)
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			continue
-		}
-		go handleControl(conn)
-	}
-}
-
-func handleControl(conn net.Conn) {
+func handleControl(conn io.ReadWriteCloser) {
 	defer conn.Close()
 	defer func() {
 		if r := recover(); r != nil {
@@ -173,6 +176,8 @@ func handleControl(conn net.Conn) {
 
 func dispatch(req request) response {
 	switch req.Cmd {
+	case "mem":
+		return memInfo()
 	case "info":
 		return response{OK: true, K8s: k3sRunning(), Version: strings.TrimSpace(run("k3s --version"))}
 	case "k8s-enable":
@@ -367,4 +372,36 @@ func k3sDisable() {
 		}
 	}
 	_ = os.Remove(k3sPID)
+}
+
+// memInfo lê /proc/meminfo e a pressão de memória (PSI) para o controlador de
+// memória do host. Sem processo filho: o host pergunta a cada 2 s.
+func memInfo() response {
+	r := response{OK: true}
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return response{OK: false, Message: err.Error()}
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		n, _ := strconv.ParseUint(f[1], 10, 64)
+		switch f[0] {
+		case "MemTotal:":
+			r.MemTotalKB = n
+		case "MemAvailable:":
+			r.MemAvailKB = n
+		}
+	}
+	if b, err := os.ReadFile("/proc/pressure/memory"); err == nil {
+		for _, f := range strings.Fields(string(b)) {
+			if v, ok := strings.CutPrefix(f, "avg10="); ok {
+				r.PSISome10, _ = strconv.ParseFloat(v, 64)
+				break
+			}
+		}
+	}
+	return r
 }
