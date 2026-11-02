@@ -1,5 +1,5 @@
 #!/bin/sh
-# Boot do guest: rede, dados (btrfs em loop), dockerd e agente do docker.sock.
+# Boot do guest: rede, dados (ext4 em loop), dockerd e agente do docker.sock.
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 mkdir -p /sys/fs/cgroup /run /tmp
@@ -14,7 +14,7 @@ ip link set eth0 up 2>/dev/null
 ip addr add "$IP/24" dev eth0 2>/dev/null
 ip route add default via 192.168.64.1 2>/dev/null
 
-# dados do Docker: data.img no host (share orbdata) montado por loop + btrfs
+# dados do Docker: data.img no host (share orbdata) montado por loop + ext4
 DATA=$(sed -n 's/.*nanoc\.data=\([^ ]*\).*/\1/p' /proc/cmdline)
 [ -n "$DATA" ] || DATA=data.img
 mkdir -p /var/lib/docker "$(dirname "/data/$DATA")"

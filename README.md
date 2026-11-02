@@ -100,7 +100,7 @@ needs: a tiny guest, one daemon, one CLI, and a socket.
 - VM with 1 GiB of RAM (configurable), 2 vCPU
 - Alpine guest with its own PID 1 (`guestinit`), no systemd, no cloud-init, no sshd
 - Compressed read-only root filesystem with a writable overlay
-- Docker data on a btrfs image, `overlay2` storage driver
+- Docker data on an ext4 image, `overlay2` storage driver
 - Bridge networking with published ports working inside the VM
 - Boot to a usable Docker socket in ~17 seconds (measured, see [Numbers](#numbers))
 
@@ -133,7 +133,7 @@ docker run --rm alpine:3.22 echo hello
 ```
 
 `nanoc status` reports the running daemon. The Docker socket lives at
-`~/.nanoc/docker.sock` and the state (btrfs `data.img`, compressed rootfs) at `~/.nanoc/`.
+`~/.nanoc/docker.sock` and the state (ext4 `data.img`, compressed rootfs) at `~/.nanoc/`.
 
 ## Commands
 
@@ -176,7 +176,7 @@ nanoc CLI ──unix socket──▶ nanoc daemon ──Virtualization.framework
 - The guest boots an Alpine kernel with a custom initramfs whose `guestinit`:
   mounts the host share, loads kernel modules from the Alpine **modloop**, mounts the
   compressed rootfs (squashfs) read-only with a tmpfs overlay, mounts the Docker
-  data image (btrfs via loop) and starts `dockerd`.
+  data image (ext4 via loop) and starts `dockerd`.
 - The daemon proxies `~/.nanoc/docker.sock` to the guest over the NAT network.
 - No GUI, no SSH. Kubernetes is opt-in.
 
@@ -244,7 +244,7 @@ nanoc k8s disable
 ```
 
 The API server is proxied from `127.0.0.1:6443` on the host to the guest, so
-kubectl works out of the box. Cluster state lives on the btrfs data image and
+kubectl works out of the box. Cluster state lives on the ext4 data image and
 survives restarts until `nanoc k8s reset`.
 
 More detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). If something fails,
@@ -268,8 +268,9 @@ virtualization.
   squashfs when the kernel has no EROFS support).
 - The default kernel is Alpine **edge** (`6.18.x-virt`), which ships EROFS and
   vsock modules. `ALPINE_CHANNEL=3.22 make bootstrap` uses the stable kernel.
-- Docker traffic uses **virtio-vsock** by default (with a TCP fallback):
-  `NANOC_VSOCK=0 nanoc up` forces TCP.
+- Docker and control traffic use **virtio-vsock** only; the guest agent does not
+  listen on TCP. `NANOC_VSOCK=0 nanoc up` switches to TCP for debugging, which
+  exposes the agent to every process on the Mac.
 - Single VM, fixed 2 vCPU; memory via `NANOC_MEM_MB`.
 - macOS only: depends on Virtualization.framework, vmnet and codesign.
 

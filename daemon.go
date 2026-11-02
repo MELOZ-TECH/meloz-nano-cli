@@ -28,8 +28,11 @@ func guestIP() string {
 	return "192.168.64.2"
 }
 
-func guestAddr() string        { return guestIP() + ":2375" }
-func guestAddrControl() string { return guestIP() + ":2376" }
+// portas vsock do nanoc-agent no guest
+const (
+	guestDockerPort  = 2375
+	guestControlPort = 2376
+)
 
 // daemonLock fica aberto enquanto o daemon vive: o flock some junto com o processo.
 var daemonLock *os.File
@@ -68,6 +71,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	noDocker := os.Getenv("NANOC_NO_DOCKER") == "1"
 	if noDocker {
 		cmdline += " nanoc.nodocker=1"
+	}
+	if tcpTransport() {
+		cmdline += " nanoc.tcp=1"
 	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine(cmdline),
@@ -163,14 +169,14 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 
 	// espera o guest responder (docker ou agente de controle)
-	waitAddr := guestAddr()
+	waitPort := guestDockerPort
 	if noDocker {
-		waitAddr = guestAddrControl()
+		waitPort = guestControlPort
 	}
 	var dialErr error
 	for i := 0; i < 90; i++ {
 		time.Sleep(time.Second)
-		c, err := net.DialTimeout("tcp", waitAddr, time.Second)
+		c, err := dialGuest(vm, waitPort)
 		if err != nil {
 			dialErr = err
 			continue
@@ -180,7 +186,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		break
 	}
 	if dialErr != nil {
-		return fmt.Errorf("guest não respondeu em %s: %v", waitAddr, dialErr)
+		return fmt.Errorf("guest não respondeu na porta %d: %v", waitPort, dialErr)
 	}
 
 	var ln net.Listener
@@ -258,18 +264,18 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				_ = json.NewDecoder(c).Decode(&req)
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active(), "bind": listenAddr()}
 				if req.Cmd == "k8s" {
-					_ = json.NewEncoder(c).Encode(guestControl(req.Action))
+					_ = json.NewEncoder(c).Encode(guestControl(vm, req.Action))
 					return
 				}
 				if req.Cmd == "run" {
-					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+					_ = json.NewEncoder(c).Encode(guestControlRaw(vm, map[string]any{
 						"cmd":  "run",
 						"argv": req.Argv,
 					}))
 					return
 				}
 				if req.Cmd == "exec" {
-					_ = json.NewEncoder(c).Encode(guestControlRaw(map[string]any{
+					_ = json.NewEncoder(c).Encode(guestControlRaw(vm, map[string]any{
 						"cmd":       "exec",
 						"container": req.Container,
 						"argv":      req.Argv,
@@ -349,7 +355,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			vc, err := dialGuest(vm, 2375)
+			vc, err := dialGuest(vm, guestDockerPort)
 			if err != nil {
 				return
 			}
@@ -401,33 +407,34 @@ func proxyCopy(a, b net.Conn) {
 	wg.Wait()
 }
 
-// dialGuest tenta vsock (se o kernel do guest suportar) e cai para TCP.
-var vsockOnce sync.Once
+// tcpTransport: NANOC_VSOCK=0 troca o vsock por TCP na rede NAT (só para depuração:
+// o agente fica aberto para qualquer processo do Mac).
+func tcpTransport() bool { return os.Getenv("NANOC_VSOCK") == "0" }
 
+// dialGuest conecta numa porta do nanoc-agent. Por vsock, que só o processo dono
+// da VM alcança; o agente não escuta TCP a menos que tcpTransport() esteja ligado.
 func dialGuest(vm *vz.VirtualMachine, port int) (net.Conn, error) {
-	if os.Getenv("NANOC_VSOCK") == "0" {
+	if tcpTransport() {
 		return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
 	}
-	if devs := vm.SocketDevices(); len(devs) > 0 {
-		if c, err := devs[0].Connect(uint32(port)); err == nil {
-			vsockOnce.Do(func() { fmt.Fprintln(os.Stderr, "transporte do docker: vsock") })
-			return c, nil
-		}
+	devs := vm.SocketDevices()
+	if len(devs) == 0 {
+		return nil, fmt.Errorf("VM sem dispositivo vsock")
 	}
-	return net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
+	return devs[0].Connect(uint32(port))
 }
 
-// guestControl fala com o nanoc-agent no guest (:2376) e devolve a resposta.
-func guestControl(action string) map[string]any {
-	return guestControlRaw(map[string]any{"cmd": "k8s-" + action})
+// guestControl fala com o nanoc-agent no guest (porta 2376) e devolve a resposta.
+func guestControl(vm *vz.VirtualMachine, action string) map[string]any {
+	return guestControlRaw(vm, map[string]any{"cmd": "k8s-" + action})
 }
 
-func guestControlRaw(payload map[string]any) map[string]any {
+func guestControlRaw(vm *vz.VirtualMachine, payload map[string]any) map[string]any {
 	out := map[string]any{"ok": false, "message": "guest sem controle"}
 	var c net.Conn
 	var err error
 	for i := 0; i < 15; i++ {
-		c, err = net.DialTimeout("tcp", guestAddrControl(), 2*time.Second)
+		c, err = dialGuest(vm, guestControlPort)
 		if err == nil {
 			break
 		}

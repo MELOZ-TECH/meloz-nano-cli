@@ -34,7 +34,7 @@ the Docker socket to the host.
      ├─ modprobe squashfs, virtiofs, virtio_net, overlay, loop
      ├─ mount share orbdata at /data
      ├─ mount modloop (squashfs) and point /lib/modules at it
-     ├─ modprobe btrfs, bridge, veth, br_netfilter, nf_tables, iptables…
+     ├─ modprobe ext4, bridge, veth, br_netfilter, nf_tables, iptables…
      ├─ losetup /data/rootfs.sqfs → /ro (squashfs, read-only)
      ├─ tmpfs /rw + overlay(lower=/ro, upper=/rw/upper) → /newroot
      ├─ bind /data into /newroot/data, mount pseudo-fs inside
@@ -42,12 +42,12 @@ the Docker socket to the host.
 
 4. guest boot script
      ├─ network: eth0 up, 192.168.64.2/24, default route 192.168.64.1
-     ├─ losetup /data/data.img → mount btrfs at /var/lib/docker
+     ├─ losetup /data/data.img → mount ext4 at /var/lib/docker
      ├─ dockerd --storage-driver=overlay2
-     └─ nanoc-agent on :2375
+     └─ nanoc-agent on vsock 2375 (Docker) and 2376 (control)
 
 5. daemon exposes the Docker API
-     └─ unix socket ~/.nanoc/docker.sock → TCP 192.168.64.2:2375 → docker.sock
+     └─ unix socket ~/.nanoc/docker.sock → virtio-vsock 2375 → docker.sock
 ```
 
 ## Storage
@@ -58,10 +58,10 @@ the Docker socket to the host.
 | Initramfs | `assets/initramfs.cpio.gz` | gzip cpio with `guestinit` |
 | Modules | `assets/modloop-virt` | squashfs, attached read-only |
 | Guest rootfs | `~/.nanoc/rootfs.sqfs` | squashfs + zstd (269 MB dir → 68 MB) |
-| Docker data | `~/.nanoc/data.img` | btrfs image, mounted via loop |
+| Docker data | `~/.nanoc/data.img` | ext4 image, mounted via loop |
 
 Writes to the guest rootfs go to a tmpfs overlay; they are intentionally
-ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.
+ephemeral. Durable state (images, containers, volumes) lives in the ext4 image.
 
 ## Networking
 
@@ -69,9 +69,12 @@ ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.
   `192.168.64.1`.
 - Inside the guest, Docker creates `docker0` + iptables rules, so
   `docker run -p 8080:80` publishes on the *guest's* loopback/eth0.
-- The host reaches the Docker API only through the daemon's unix socket.
-  Ports published by containers are not exposed on the macOS host yet
-  (that requires a root helper with the `vmnet` entitlement).
+- The host reaches the Docker API and the agent's control channel only over
+  virtio-vsock, which only the daemon process can open. The agent does not
+  listen on TCP, so other processes on the Mac and other VMs on the NAT
+  network cannot reach it (`NANOC_VSOCK=0` turns TCP back on for debugging).
+- Ports published by containers are forwarded to `127.0.0.1` on the Mac
+  (`0.0.0.0` with `NANOC_LAN=1`).
 
 ## Memory
 
@@ -88,9 +91,10 @@ ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.
 - **Data image on the host, mounted by loop.** Avoids reattach problems with
   block devices and keeps a single sparse file to back up.
 - **Modules from the Alpine modloop.** The kernel itself stays small; netfilter,
-  btrfs and bridge modules are mounted from a signed squashfs only when needed.
-- **TCP for the Docker proxy.** The Alpine kernel ships no `virtio_vsock` module,
-  so vsock cannot be used without a custom kernel.
+  ext4 and bridge modules are mounted from a signed squashfs only when needed.
+- **vsock for the Docker proxy and control.** Only the process that owns the VM
+  can open a vsock connection, so the root-equivalent Docker API and the
+  agent's `run`/`exec` commands are not reachable from the network.
 
 ## Known limitations
 
