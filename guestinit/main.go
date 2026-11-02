@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -73,15 +74,15 @@ func main() {
 		modprobe(m)
 	}
 
-	// módulos: do initramfs (edge) e/ou do modloop (stock), o que existir
-	if err := mount("/dev/vda", "/modloop", "squashfs", unix.MS_RDONLY, ""); err == nil {
-		if u := unameRelease(); u != "" {
-			// usa os módulos do initramfs quando existirem; senão aponta para o modloop
-			if _, err := os.Stat("/lib/modules/" + u); err != nil {
-				if _, statErr := os.Stat("/modloop/modules/" + u); statErr == nil {
-					_ = os.MkdirAll("/lib/modules", 0o755)
-					_ = os.Symlink("/modloop/modules/"+u, "/lib/modules/"+u)
-				}
+	// módulos: o initramfs do Alpine só traz o necessário para chegar aqui; o resto
+	// vem do modloop, montado por cima de /lib/modules/<versão>
+	modDir := ""
+	if u := unameRelease(); u != "" {
+		modDir = "/lib/modules/" + u
+		if err := mount("/dev/vda", "/modloop", "squashfs", unix.MS_RDONLY, ""); err == nil {
+			if _, err := os.Stat("/modloop/modules/" + u); err == nil {
+				_ = os.MkdirAll(modDir, 0o755)
+				must(unix.Mount("/modloop/modules/"+u, modDir, "", unix.MS_BIND, ""), "bind modloop")
 			}
 		}
 	}
@@ -136,6 +137,15 @@ func main() {
 	_ = os.MkdirAll("/newroot/data", 0o755)
 	must(unix.Mount("/data", "/newroot/data", "", unix.MS_BIND|unix.MS_REC, ""), "bind /data")
 	mount("cgroup2", "/newroot/sys/fs/cgroup", "cgroup2", 0, "")
+	// módulos também no novo root, para o script do guest carregar zram e afins
+	if _, err := os.Stat(modDir); modDir != "" && err == nil {
+		_ = os.MkdirAll("/newroot"+modDir, 0o755)
+		must(unix.Mount(modDir, "/newroot"+modDir, "", unix.MS_BIND, ""), "bind módulos")
+	}
+
+	// o initramfs fica na RAM até ser apagado; depois do MS_MOVE ele some de vista
+	// mas continua ocupando memória (é o que o switch_root do busybox evita)
+	freeInitramfs()
 
 	// switch_root: move o novo root para cima de "/" antes do chroot. Com chroot
 	// puro, a raiz do namespace de montagem continua sendo o initramfs, e o
@@ -153,6 +163,32 @@ func main() {
 		fmt.Fprintf(os.Stderr, "guestinit: guest script: %v\n", err)
 	}
 	poweroff()
+}
+
+// freeInitramfs apaga os arquivos do initramfs, sem descer em outras montagens.
+func freeInitramfs() {
+	var root unix.Stat_t
+	if err := unix.Lstat("/", &root); err != nil {
+		return
+	}
+	var walk func(dir string)
+	walk = func(dir string) {
+		entries, _ := os.ReadDir(dir)
+		for _, e := range entries {
+			p := filepath.Join(dir, e.Name())
+			var st unix.Stat_t
+			if unix.Lstat(p, &st) != nil || st.Dev != root.Dev {
+				continue
+			}
+			if e.IsDir() {
+				walk(p)
+				_ = unix.Rmdir(p)
+			} else {
+				_ = unix.Unlink(p)
+			}
+		}
+	}
+	walk("/")
 }
 
 // mountRootfs monta o rootfs comprimido: EROFS se o kernel suportar, senão squashfs.

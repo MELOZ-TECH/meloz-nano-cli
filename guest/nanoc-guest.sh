@@ -7,6 +7,27 @@ mount -t cgroup2 none /sys/fs/cgroup 2>/dev/null
 mount -t tmpfs tmpfs /run 2>/dev/null
 mount -t tmpfs tmpfs /tmp 2>/dev/null
 
+# memória (baseado no guest do OrbStack). O balão do VZ não devolve ao macOS
+# página já tocada, então o guest deve tocar o mínimo e comprimir o que esfria em
+# vez de pedir RAM nova ao host. Por isso swappiness 100 (o OrbStack usa 20, mas
+# ele devolve memória ao host e nós não).
+sysctl -q -w vm.overcommit_memory=1 vm.watermark_boost_factor=0 \
+  vm.compaction_proactiveness=0 vm.page-cluster=0 vm.swappiness=100 2>/dev/null
+# MGLRU: min_ttl_ms protege do despejo o que foi usado no último meio segundo
+echo 500 > /sys/kernel/mm/lru_gen/min_ttl_ms 2>/dev/null
+# THP de 2 MB só sob madvise (com "always" um toque de 4 KB custa 2 MB no Mac);
+# folios de 16 KB continuam automáticos
+THP=/sys/kernel/mm/transparent_hugepage
+echo madvise > $THP/enabled 2>/dev/null
+echo always > $THP/hugepages-16kB/enabled 2>/dev/null
+# zram como swap: até o tamanho da RAM do guest, comprimida com lz4
+if ! grep -q nanoc.nozram /proc/cmdline && modprobe zram num_devices=1 2>/dev/null; then
+  ZMEM=$(awk '/^MemTotal/ { print $2 }' /proc/meminfo)
+  echo lz4 > /sys/block/zram0/comp_algorithm 2>/dev/null
+  echo "${ZMEM}K" > /sys/block/zram0/disksize && mkswap /dev/zram0 >/dev/null 2>&1 &&
+    swapon -p 32767 /dev/zram0 2>/dev/null
+fi
+
 IP=$(sed -n 's/.*nanoc\.ip=\([0-9.]*\).*/\1/p' /proc/cmdline)
 [ -n "$IP" ] || IP=192.168.64.2
 ip link set lo up 2>/dev/null

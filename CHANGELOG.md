@@ -4,6 +4,30 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-11-02
+
+### Changed
+
+- The guest is tuned to touch less memory and compress what goes cold, since
+  pages it touches never go back to macOS: zram swap (lz4, up to the guest RAM),
+  `vm.swappiness=100`, `vm.page-cluster=0`, `vm.overcommit_memory=1`, no
+  watermark boost or proactive compaction, MGLRU `min_ttl_ms=500`, and 2 MB
+  transparent huge pages only on `madvise` (16 KB folios stay automatic). Based
+  on the settings OrbStack applies in its own guest. `nanoc.nozram` on the
+  kernel command line turns zram off.
+- The initramfs is Alpine's own plus `guestinit` (29 MB → 10 MB gzip); the other
+  kernel modules come from the modloop disk, which is now also visible after the
+  switch to the real root, so the guest can load modules later.
+- `guestinit` deletes the initramfs before switching root, like busybox
+  `switch_root`. It is a RAM filesystem and stayed allocated for the life of the
+  VM (97 MB before this release).
+
+### Fixed
+
+- `nanoc down && nanoc up` could fail with "The storage device attachment is
+  invalid": the previous VM process still held `data.img` for a few seconds. The
+  daemon now retries for up to 15 s.
+
 ## [0.15.0] - 2026-11-01
 
 ### Added

@@ -59,19 +59,10 @@ fi
 cp "$ROOT/guest/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-guest.sh"
 chmod +x "$ROOT/rootfs/opt/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-agent" "$ROOT/rootfs/guestinit"
 
-# módulos do modloop (para kernels cujo initramfs não tem virtiofs/vsock)
-rm -rf "$CACHE/mods" && mkdir -p "$CACHE/mods"
-docker run --rm -v "$ASSETS/modloop-virt:/m:ro" -v "$CACHE/mods:/out" alpine:3.22 sh -c '
-  apk add -q squashfs-tools >/dev/null 2>&1
-  unsquashfs -q -d /tmp/sq /m >/dev/null 2>&1
-  cp -a /tmp/sq/modules/. /out/
-'
-
-# initramfs com o init próprio e os módulos
+# initramfs do Alpine + o init próprio. Os demais módulos vêm do modloop (vda),
+# que o guestinit monta em /lib/modules; copiá-los aqui deixava 70 MB a mais na RAM.
 rm -rf "$CACHE/initrd" && mkdir -p "$CACHE/initrd"
 gzip -dc "$ASSETS/initramfs-virt" | ( cd "$CACHE/initrd" && cpio -idm --quiet )
-mkdir -p "$CACHE/initrd/lib/modules"
-cp -a "$CACHE/mods/." "$CACHE/initrd/lib/modules/"
 cp "$ROOT/rootfs/guestinit" "$CACHE/initrd/guestinit"
 chmod +x "$CACHE/initrd/guestinit"
 ( cd "$CACHE/initrd" && find . | cpio -o -H newc --quiet | gzip -9 ) > "$ASSETS/initramfs.cpio.gz"
