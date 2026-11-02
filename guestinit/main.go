@@ -70,7 +70,9 @@ func main() {
 	mount("sysfs", "/sys", "sysfs", 0, "")
 	mount("devtmpfs", "/dev", "devtmpfs", 0, "")
 
-	for _, m := range []string{"squashfs", "virtiofs", "virtio_net", "virtio_pci", "virtio_blk", "overlay", "loop"} {
+	// virtio_mmio: o backend experimental com libkrun usa virtio-mmio; no VZ (PCI)
+	// o módulo carrega sem achar dispositivo
+	for _, m := range []string{"squashfs", "virtio_mmio", "virtiofs", "virtio_net", "virtio_pci", "virtio_blk", "overlay", "loop"} {
 		modprobe(m)
 	}
 

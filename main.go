@@ -65,6 +65,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "krun-boot":
+			if err := krunBoot(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "daemon":
 			if err := runDaemon(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 				panic(err)
