@@ -63,3 +63,21 @@ func TestHalfCloserSemSuporte(t *testing.T) {
 		t.Fatal("net.Pipe não tem half-close")
 	}
 }
+
+func TestDaemonAlive(t *testing.T) {
+	ctl := filepath.Join(t.TempDir(), "nanoc.sock")
+	if daemonAlive(ctl) {
+		t.Fatal("sem arquivo de lock não há daemon")
+	}
+	if err := lockDaemon(ctl); err != nil {
+		t.Fatal(err)
+	}
+	if !daemonAlive(ctl) {
+		t.Fatal("lock preso deveria indicar daemon vivo")
+	}
+	daemonLock.Close()
+	daemonLock = nil
+	if daemonAlive(ctl) {
+		t.Fatal("lock solto deveria indicar daemon morto")
+	}
+}

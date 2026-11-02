@@ -121,27 +121,21 @@ func cli(cmd string) error {
 			fmt.Println("nanoc: já rodando")
 			return nil
 		}
-		// limpa daemon zumbi que ainda segura data.img
-		if b, rerr := os.ReadFile(ctl + ".pid"); rerr == nil {
-			var pid int
-			fmt.Sscanf(string(b), "%d", &pid)
-			if pid > 0 {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-				for i := 0; i < 50; i++ {
-					if err := syscall.Kill(pid, 0); err != nil {
-						break
-					}
-					time.Sleep(100 * time.Millisecond)
-				}
-			}
+		stateDir, _, _ := paths()
+		// O lock do daemon só existe enquanto o processo vive. Preso, o daemon está
+		// ligando a VM ou lento demais para responder (carga alta no Mac): matar
+		// derrubava containers rodando. Espera ele em vez disso.
+		if daemonAlive(ctl) {
+			fmt.Println("nanoc: daemon já existe e ainda não respondeu; aguardando")
+			return waitReady(stateDir, docker)
 		}
+		// ninguém segura o lock: o .pid é de um daemon morto, e o pid pode já ser de
+		// outro processo
 		_ = os.Remove(ctl + ".pid")
-		time.Sleep(2 * time.Second)
 		self, err := os.Executable()
 		if err != nil {
 			return err
 		}
-		stateDir, _, _ := paths()
 		assets := envOr("NANOC_ASSETS", filepath.Join(stateDir, "assets"))
 		rootfs := envOr("NANOC_ROOTFS", stateDir)
 		logf, err := os.OpenFile(filepath.Join(stateDir, "daemon.log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -157,16 +151,21 @@ func cli(cmd string) error {
 		if err := c.Start(); err != nil {
 			return err
 		}
-		for i := 0; i < 120; i++ {
-			if _, err := ctlRequest("status", 300*time.Millisecond); err == nil {
-				fmt.Printf("nanoc: pronto → DOCKER_HOST=unix://%s\n", docker)
-				return nil
-			}
-			time.Sleep(time.Second)
-		}
-		return fmt.Errorf("daemon não respondeu; veja %s/daemon.log", stateDir)
+		return waitReady(stateDir, docker)
 	}
 	return fmt.Errorf("comando desconhecido: %s", cmd)
+}
+
+// waitReady espera o daemon responder ao status por até dois minutos.
+func waitReady(stateDir, docker string) error {
+	for i := 0; i < 120; i++ {
+		if _, err := ctlRequest("status", time.Second); err == nil {
+			fmt.Printf("nanoc: pronto → DOCKER_HOST=unix://%s\n", docker)
+			return nil
+		}
+		time.Sleep(time.Second)
+	}
+	return fmt.Errorf("daemon não respondeu; veja %s/daemon.log", stateDir)
 }
 
 // execCmd roda um comando dentro de um container, via agente no guest.
