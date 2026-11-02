@@ -1,0 +1,55 @@
+/* Identidade visual MELOZ nano (nano.meloz.com.br) */
+@import url("https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&display=swap");
+
+:root {
+  --nano-ink: #030148;
+  --nano-indigo: #07038c;
+  --nano-red: #f20732;
+  --nano-teal: #32bcad;
+  --nano-paper: #f3f4fb;
+}
+
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: var(--nano-ink);
+  --md-primary-fg-color--light: var(--nano-indigo);
+  --md-primary-fg-color--dark: #02012e;
+  --md-accent-fg-color: var(--nano-red);
+  --md-typeset-a-color: var(--nano-indigo);
+  --md-code-bg-color: var(--nano-paper);
+}
+
+[data-md-color-scheme="slate"] {
+  --md-primary-fg-color: var(--nano-ink);
+  --md-primary-fg-color--light: var(--nano-indigo);
+  --md-primary-fg-color--dark: #02012e;
+  --md-accent-fg-color: var(--nano-red);
+  --md-typeset-a-color: #8f8cff;
+  --md-default-bg-color: #06052b;
+  --md-code-bg-color: #0b0a3d;
+}
+
+.md-header,
+.md-tabs {
+  background: var(--nano-ink);
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3,
+.md-header__topic {
+  font-family: "Bricolage Grotesque", var(--md-text-font-family), sans-serif;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.md-typeset h1 {
+  color: inherit;
+}
+
+.md-typeset a:hover {
+  color: var(--nano-red);
+}
+
+.md-typeset code {
+  border-radius: 0.3rem;
+}

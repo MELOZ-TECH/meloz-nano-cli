@@ -102,7 +102,11 @@ ephemeral. Durable state (images, containers, volumes) lives in the btrfs image.
 
 ## Diagram
 
-![architecture](architecture.svg)
+![nano-container architecture](architecture.svg)
+
+A `docker run` request, end to end (host → virtio-vsock → guest):
+
+![Animated diagram of a docker run request crossing host, vsock and guest](img/docker-run-flow.svg)
 
 ```mermaid
 flowchart LR

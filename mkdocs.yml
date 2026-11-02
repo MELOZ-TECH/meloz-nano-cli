@@ -7,14 +7,21 @@ edit_uri: edit/main/docs/
 
 theme:
   name: material
+  logo: img/logo-mark.svg
+  favicon: img/favicon.svg
+  font:
+    text: Instrument Sans
+    code: Roboto Mono
   palette:
     - scheme: default
-      primary: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: dark mode
     - scheme: slate
-      primary: teal
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: light mode
@@ -47,6 +54,9 @@ markdown_extensions:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
+
+extra_css:
+  - stylesheets/brand.css
 
 plugins:
   - search

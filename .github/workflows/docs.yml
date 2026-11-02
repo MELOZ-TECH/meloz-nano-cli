@@ -28,6 +28,18 @@ jobs:
           cp README.md docs/index.md
           sed -i 's|(docs/|(|g' docs/index.md
           sed -i 's|](go.mod)|](https://github.com/MELOZ-TECH/nano-container/blob/main/go.mod)|g' docs/index.md
+          sed -i 's|"docs/|"|g' docs/index.md
+          # <picture> follows the OS theme; on the site use Material's light/dark toggle instead
+          python3 - <<'PY'
+          import re
+          p = "docs/index.md"
+          s = open(p).read()
+          s = re.sub(r'<picture>.*?</picture>',
+                     '<img src="img/logo-light.svg#only-light" alt="nano-container" height="96">'
+                     '<img src="img/logo-dark.svg#only-dark" alt="nano-container" height="96">',
+                     s, count=1, flags=re.S)
+          open(p, "w").write(s)
+          PY
           cp CHANGELOG.md CONTRIBUTING.md ROADMAP.md SECURITY.md \
              CODE_OF_CONDUCT.md THIRD_PARTY.md LICENSE docs/
       - name: Install mkdocs
