@@ -22,12 +22,13 @@ the Docker socket to the host.
 
 2. daemon builds the VM configuration
      ├─ LinuxBootLoader(kernel, initramfs) + cmdline `rdinit=/guestinit`
-     ├─ 2 vCPU, NANOC_MEM_MB (default 1 GiB)
+     ├─ 2 vCPU, memory ceiling NANOC_MEM_MB (default: half the Mac's RAM, 2–8 GiB)
      ├─ virtio-net with NAT
-     ├─ virtio-balloon
-     ├─ virtio-vsock (device present; the Alpine kernel has no vsock module)
+     ├─ virtio-balloon (starts at NANOC_MEM_MIN_MB, grows on demand)
+     ├─ virtio-vsock (Docker API and agent control)
      ├─ virtio-blk read-only: Alpine modloop (kernel modules)
-     └─ virtiofs share "orbdata": host directory with rootfs.sqfs + data.img
+     ├─ virtio-blk read-write: data.img (Docker data)
+     └─ virtiofs share "orbdata": host directory with the compressed rootfs
 
 3. guestinit (PID 1)
      ├─ mount /proc /sys /dev
@@ -42,7 +43,7 @@ the Docker socket to the host.
 
 4. guest boot script
      ├─ network: eth0 up, 192.168.64.2/24, default route 192.168.64.1
-     ├─ losetup /data/data.img → mount ext4 at /var/lib/docker
+     ├─ mount /dev/vdb (data.img, ext4) at /var/lib/docker
      ├─ dockerd --storage-driver=overlay2
      └─ nanoc-agent on vsock 2375 (Docker) and 2376 (control)
 
@@ -58,7 +59,7 @@ the Docker socket to the host.
 | Initramfs | `assets/initramfs.cpio.gz` | gzip cpio with `guestinit` |
 | Modules | `assets/modloop-virt` | squashfs, attached read-only |
 | Guest rootfs | `~/.nanoc/rootfs.sqfs` | squashfs + zstd (269 MB dir → 68 MB) |
-| Docker data | `~/.nanoc/data.img` | ext4 image, mounted via loop |
+| Docker data | `~/.nanoc/data.img` | ext4 image, attached as virtio-blk |
 
 Writes to the guest rootfs go to a tmpfs overlay; they are intentionally
 ephemeral. Durable state (images, containers, volumes) lives in the ext4 image.
@@ -78,6 +79,21 @@ ephemeral. Durable state (images, containers, volumes) lives in the ext4 image.
 
 ## Memory
 
+The VM is created with a ceiling (`NANOC_MEM_MB`, default half the Mac's RAM,
+2–8 GiB) and the memory balloon holds the guest at a smaller target
+(`NANOC_MEM_MIN_MB`, default 1 GiB). Every 2 s the daemon reads `MemAvailable`
+and memory PSI from the agent: below 20% free (or PSI above 10) the target grows
+by 512 MiB (256 MiB when macOS itself is under critical pressure); after 60 s
+with more than half free it shrinks by 256 MiB. The balloon also deflates by
+itself on guest OOM. `nanoc status` shows the current target.
+
+Virtualization.framework's balloon has no free page reporting, so pages the guest
+has touched are not handed back to macOS: the cost on the Mac is the highest
+target reached, not the ceiling. Shrinking still helps, since pages held by the
+balloon go cold and macOS compresses or swaps them first. The kernel runs with
+`init_on_alloc=0` so inflating the balloon does not touch pages the guest never
+used. `NANOC_MEM_DYNAMIC=0` turns this off and gives the guest the full ceiling.
+
 - Idle guest: ~92 MB used (measured with `free -m` at 2 GiB).
 - Host daemon RSS: ~9-10 MB.
 - Boot to a working Docker socket: ~6 s.
@@ -88,8 +104,10 @@ ephemeral. Durable state (images, containers, volumes) lives in the ext4 image.
   daemon; the boot path is explicit and small.
 - **Compressed read-only rootfs + overlay.** Image is ~4× smaller than the
   directory and the guest cannot corrupt its own base system.
-- **Data image on the host, mounted by loop.** Avoids reattach problems with
-  block devices and keeps a single sparse file to back up.
+- **Data image as a virtio-blk disk.** A single sparse file on the host, attached
+  directly instead of through a loop device on virtiofs, which skips the FUSE
+  round trip on every block. `NANOC_DATA_BLK=0` goes back to the loop mount.
+  The daemon's lock keeps two VMs from attaching the same image.
 - **Modules from the Alpine modloop.** The kernel itself stays small; netfilter,
   ext4 and bridge modules are mounted from a signed squashfs only when needed.
 - **vsock for the Docker proxy and control.** Only the process that owns the VM

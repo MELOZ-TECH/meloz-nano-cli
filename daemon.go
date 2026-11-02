@@ -61,7 +61,11 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
 
-	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit nanoc.ip=" + guestIP()
+	// init_on_alloc=0: com o padrão do Alpine o kernel zera cada página alocada, e
+	// o balão, ao inflar, encostava em páginas que o guest nunca usou (a VM passava
+	// a ocupar o teto inteiro no Mac). psi=1 liga /proc/pressure para o controlador
+	// de memória.
+	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit init_on_alloc=0 psi=1 nanoc.ip=" + guestIP()
 	if v := os.Getenv("NANOC_DATA_REL"); v != "" {
 		cmdline += " nanoc.data=" + v
 	}
@@ -74,6 +78,28 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 	if tcpTransport() {
 		cmdline += " nanoc.tcp=1"
+	}
+
+	dataDir := filepath.Dir(data)
+	if v := os.Getenv("NANOC_SHARE_DIR"); v != "" {
+		dataDir = v
+	}
+	_ = os.MkdirAll(dataDir, 0o755)
+	dataPath := filepath.Join(dataDir, envOr("NANOC_DATA_REL", filepath.Base(data)))
+	dataBlk := os.Getenv("NANOC_DATA_BLK") != "0"
+	if dataBlk {
+		created, err := ensureDataImage(dataPath)
+		if err != nil {
+			return err
+		}
+		dev := "vda"
+		if _, err := os.Stat(modloop); err == nil {
+			dev = "vdb" // o modloop vem antes
+		}
+		cmdline += " nanoc.datadev=" + dev
+		if created {
+			cmdline += " nanoc.datanew=1"
+		}
 	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine(cmdline),
@@ -109,7 +135,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}
 	cfg.SetSocketDevicesVirtualMachineConfiguration([]vz.SocketDeviceConfiguration{sockCfg})
 
-	// disco read-only com os módulos do kernel (modloop)
+	// discos: modloop read-only (vda) e, por padrão, o data.img direto como
+	// virtio-blk (vdb). O loop sobre virtiofs fica para NANOC_DATA_BLK=0.
+	var disks []vz.StorageDeviceConfiguration
 	if _, err := os.Stat(modloop); err == nil {
 		att, err := vz.NewDiskImageStorageDeviceAttachment(modloop, true)
 		if err != nil {
@@ -119,16 +147,19 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		if err != nil {
 			return err
 		}
-		cfg.SetStorageDevicesVirtualMachineConfiguration([]vz.StorageDeviceConfiguration{blk})
+		disks = append(disks, blk)
 	}
+	if dataBlk {
+		blk, err := dataDisk(dataPath)
+		if err != nil {
+			return err
+		}
+		disks = append(disks, blk)
+	}
+	cfg.SetStorageDevicesVirtualMachineConfiguration(disks)
 
-	// share de dados (rootfs.erofs + data.img) — o rootfs é EROFS read-only
+	// share de dados (rootfs.erofs; data.img só no modo loop) — o rootfs é EROFS read-only
 	shares := make([]vz.DirectorySharingDeviceConfiguration, 0)
-	dataDir := filepath.Dir(data)
-	if v := os.Getenv("NANOC_SHARE_DIR"); v != "" {
-		dataDir = v
-	}
-	_ = os.MkdirAll(dataDir, 0o755)
 	if dataShare, err := newShare("orbdata", dataDir); err == nil {
 		shares = append(shares, dataShare)
 	}
@@ -167,6 +198,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	if err := vm.Start(); err != nil {
 		return err
 	}
+	mem := newMemController(vm)
 
 	// espera o guest responder (docker ou agente de controle)
 	waitPort := guestDockerPort
@@ -240,6 +272,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	}()
 
 	fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
+	if mem != nil {
+		go mem.run()
+	}
 
 	// portas publicadas pelo Docker no guest ficam acessíveis em 127.0.0.1:<porta>
 	pf := newPortForward()
@@ -260,11 +295,19 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 					Action    string   `json:"action"`
 					Container string   `json:"container"`
 					Argv      []string `json:"argv"`
+					MB        uint64   `json:"mb"`
 				}
 				_ = json.NewDecoder(c).Decode(&req)
 				resp := map[string]any{"running": true, "pid": os.Getpid(), "docker_sock": sockPath, "ports": pf.active(), "bind": listenAddr()}
+				for k, v := range mem.status() {
+					resp[k] = v
+				}
 				if req.Cmd == "k8s" {
 					_ = json.NewEncoder(c).Encode(guestControl(vm, req.Action))
+					return
+				}
+				if req.Cmd == "balloon" {
+					_ = json.NewEncoder(c).Encode(balloonCmd(mem, req.MB))
 					return
 				}
 				if req.Cmd == "run" {
@@ -469,4 +512,29 @@ func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {
 	}
 	fs.SetDirectoryShare(one)
 	return fs, nil
+}
+
+// ensureDataImage cria o data.img esparso (8 GiB) se ele não existir. O guest só
+// formata quando recebe nanoc.datanew=1, para nunca apagar um disco existente.
+func ensureDataImage(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return false, nil
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	return true, f.Truncate(8 << 30)
+}
+
+// dataDisk anexa o data.img como virtio-blk. fsync em vez de F_FULLFSYNC: o mesmo
+// compromisso de durabilidade do loop sobre virtiofs, sem a ida e volta do FUSE.
+func dataDisk(path string) (*vz.VirtioBlockDeviceConfiguration, error) {
+	att, err := vz.NewDiskImageStorageDeviceAttachmentWithCacheAndSync(path, false,
+		vz.DiskImageCachingModeAutomatic, vz.DiskImageSynchronizationModeFsync)
+	if err != nil {
+		return nil, err
+	}
+	return vz.NewVirtioBlockDeviceConfiguration(att)
 }

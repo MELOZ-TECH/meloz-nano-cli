@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -48,6 +49,10 @@ type response struct {
 	Version  string `json:"version,omitempty"`
 	Output   string `json:"output,omitempty"`
 	ExitCode int    `json:"exit_code,omitempty"`
+
+	MemTotalKB uint64  `json:"mem_total_kb,omitempty"`
+	MemAvailKB uint64  `json:"mem_avail_kb,omitempty"`
+	PSISome10  float64 `json:"psi_some_avg10,omitempty"`
 }
 
 func main() {
@@ -171,6 +176,8 @@ func handleControl(conn io.ReadWriteCloser) {
 
 func dispatch(req request) response {
 	switch req.Cmd {
+	case "mem":
+		return memInfo()
 	case "info":
 		return response{OK: true, K8s: k3sRunning(), Version: strings.TrimSpace(run("k3s --version"))}
 	case "k8s-enable":
@@ -365,4 +372,36 @@ func k3sDisable() {
 		}
 	}
 	_ = os.Remove(k3sPID)
+}
+
+// memInfo lê /proc/meminfo e a pressão de memória (PSI) para o controlador de
+// memória do host. Sem processo filho: o host pergunta a cada 2 s.
+func memInfo() response {
+	r := response{OK: true}
+	b, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return response{OK: false, Message: err.Error()}
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		f := strings.Fields(line)
+		if len(f) < 2 {
+			continue
+		}
+		n, _ := strconv.ParseUint(f[1], 10, 64)
+		switch f[0] {
+		case "MemTotal:":
+			r.MemTotalKB = n
+		case "MemAvailable:":
+			r.MemAvailKB = n
+		}
+	}
+	if b, err := os.ReadFile("/proc/pressure/memory"); err == nil {
+		for _, f := range strings.Fields(string(b)) {
+			if v, ok := strings.CutPrefix(f, "avg10="); ok {
+				r.PSISome10, _ = strconv.ParseFloat(v, 64)
+				break
+			}
+		}
+	}
+	return r
 }

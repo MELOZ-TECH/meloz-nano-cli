@@ -87,6 +87,7 @@ func main() {
 	}
 	for _, m := range []string{"virtiofs", "virtio_net", "virtio_pci", "virtio_blk",
 		"vsock", "vmw_vsock_virtio_transport", "vmw_vsock_virtio_transport_common",
+		"virtio_balloon",
 		"loop", "overlay", "vxlan", "udp_tunnel", "ip6_udp_tunnel",
 		"binfmt_misc", "ext4", "btrfs", "bridge", "veth", "br_netfilter",
 		"nf_tables", "nf_nat", "nf_conntrack", "nf_conntrack_netlink",
