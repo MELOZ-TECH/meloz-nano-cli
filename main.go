@@ -72,7 +72,11 @@ func main() {
 			}
 			return
 		case "daemon":
-			if err := runDaemon(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
+			run := runDaemon
+			if os.Getenv("NANOC_BACKEND") == "krun" {
+				run = runKrunDaemon
+			}
+			if err := run(os.Args[2], os.Args[3], os.Args[4], os.Args[5], os.Args[6]); err != nil {
 				panic(err)
 			}
 			return

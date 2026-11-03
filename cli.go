@@ -88,6 +88,9 @@ func cli(cmd string) error {
 			return nil
 		}
 		fmt.Printf("nanoc: rodando (pid %v) docker=%v\n", resp["pid"], resp["docker_sock"])
+		if b, ok := resp["backend"].(string); ok {
+			fmt.Printf("backend: %s\n", b)
+		}
 		if t, ok := resp["mem_target_mb"]; ok {
 			fmt.Printf("memória: %v MB de até %v MB (ajuste automático)\n", t, resp["mem_max_mb"])
 		} else if m, ok := resp["mem_max_mb"]; ok {

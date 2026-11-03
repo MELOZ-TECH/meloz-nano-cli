@@ -50,7 +50,7 @@ static int nanoc_fail(const char *what, KrunError err) {
 
 typedef struct {
 	const char *kernel, *initrd, *cmdline;
-	const char *modloop, *data, *share;
+	const char *modloop, *data, *share, *users;
 	const char *sock_docker, *sock_control;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
 	int net_fd;
@@ -86,6 +86,12 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	KrunFsDevice fs;
 	TRY("orbdata", fs = krun_fs_device_new(KRUN_STR("orbdata"), KRUN_STR(c->share), &err));
 	krun_mmio_device_manager_add(devs, fs);
+	// /Users no mesmo caminho, para -v /Users/... funcionar
+	if (c->users && *c->users) {
+		KrunFsDevice ufs;
+		TRY("orbusers", ufs = krun_fs_device_new(KRUN_STR("orbusers"), KRUN_STR(c->users), &err));
+		krun_mmio_device_manager_add(devs, ufs);
+	}
 
 	// tsi_features 0: sem TSI, que exige o kernel do libkrunfw
 	KrunVsockDevice vs;
@@ -203,6 +209,73 @@ func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
 	return vn, fds[1], nil
 }
 
+// krunOpts: o que muda entre o `krun-boot` de teste e o daemon
+type krunOpts struct {
+	kernel, initrd, modloop, data, share, users string
+	sockDocker, sockControl                     string
+	cmdline                                     string
+	cpus, ramMiB, fprMode, logLevel             int
+	netFD                                       int // -1: sem rede
+}
+
+// krunRun entra no libkrun na thread atual. Só volta em erro: quando o guest
+// desliga, o libkrun encerra o processo.
+func krunRun(o krunOpts) error {
+	strs := []*C.char{}
+	cs := func(s string) *C.char {
+		p := C.CString(s)
+		strs = append(strs, p)
+		return p
+	}
+	defer func() {
+		for _, p := range strs {
+			C.free(unsafe.Pointer(p))
+		}
+	}()
+	for _, p := range []string{o.sockDocker, o.sockControl} {
+		_ = os.Remove(p)
+	}
+	cfg := C.nanoc_krun_cfg{
+		kernel:       cs(o.kernel),
+		initrd:       cs(o.initrd),
+		cmdline:      cs(o.cmdline),
+		modloop:      cs(o.modloop),
+		data:         cs(o.data),
+		share:        cs(o.share),
+		users:        cs(o.users),
+		sock_docker:  cs(o.sockDocker),
+		sock_control: cs(o.sockControl),
+		cpus:         C.int(o.cpus),
+		ram_mib:      C.int(o.ramMiB),
+		fpr_mode:     C.int(o.fprMode),
+		log_level:    C.int(o.logLevel),
+		// o hvc0 é virtio e só existe depois do modprobe virtio_mmio; sem console no
+		// início, o runtime do Go do guestinit não acha os fds 0-2 e sai com código 2.
+		// A serial PL011 vem compilada no kernel e vira o console (o último vale).
+		serial: 1,
+		net_fd: C.int(o.netFD),
+	}
+	for i, b := range krunGuestMAC {
+		cfg.mac[i] = C.uchar(b)
+	}
+	runtime.LockOSThread()
+	C.nanoc_krun_run(&cfg)
+	return fmt.Errorf("libkrun: %s", C.GoString(C.nanoc_krun_error()))
+}
+
+// krunCmdline: a mesma linha do daemon do VZ, mais a serial como console
+func krunCmdline(created, noDocker bool) string {
+	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit init_on_alloc=0 psi=1 nanoc.ip=" + guestIP() +
+		" nanoc.datadev=vdb"
+	if created {
+		cmdline += " nanoc.datanew=1"
+	}
+	if noDocker {
+		cmdline += " nanoc.nodocker=1"
+	}
+	return cmdline + " console=ttyAMA0"
+}
+
 // krunBoot: nanoc krun-boot -dir <estado> [-ram MiB] [-fpr replace|default|off]
 // <estado> precisa ter rootfs.erofs; o data.img é criado ali se faltar. Os sockets
 // vsock-2375.sock e vsock-2376.sock ficam em -sockdir e levam às portas do agente.
@@ -239,72 +312,36 @@ func krunBoot(args []string) error {
 	if err != nil {
 		return err
 	}
-	cmdline := "console=hvc0 panic=-1 rdinit=/guestinit init_on_alloc=0 psi=1 nanoc.ip=" + guestIP() +
-		" nanoc.datadev=vdb"
-	if created {
-		cmdline += " nanoc.datanew=1"
-	}
-	if *noDocker {
-		cmdline += " nanoc.nodocker=1"
-	}
-	// o hvc0 é virtio e só existe depois do modprobe virtio_mmio; sem console no
-	// início, o runtime do Go do guestinit não acha os fds 0-2 e sai com código 2.
-	// A serial PL011 vem compilada no kernel, então vira o console (o último vale).
-	serial := true
-	cmdline += " console=ttyAMA0"
-
-	strs := []*C.char{}
-	cs := func(s string) *C.char {
-		p := C.CString(s)
-		strs = append(strs, p)
-		return p
-	}
-	defer func() {
-		for _, p := range strs {
-			C.free(unsafe.Pointer(p))
-		}
-	}()
 	_ = os.MkdirAll(*sockDir, 0o700)
-	for _, p := range []string{"vsock-2375.sock", "vsock-2376.sock"} {
-		_ = os.Remove(filepath.Join(*sockDir, p))
+	o := krunOpts{
+		kernel:      filepath.Join(*assets, "Image"),
+		initrd:      envOr("NANOC_KRUN_INITRD", filepath.Join(*assets, "initramfs.cpio.gz")),
+		modloop:     filepath.Join(*assets, "modloop-virt"),
+		data:        data,
+		share:       *dir,
+		sockDocker:  filepath.Join(*sockDir, "vsock-2375.sock"),
+		sockControl: filepath.Join(*sockDir, "vsock-2376.sock"),
+		cmdline:     krunCmdline(created, *noDocker),
+		cpus:        *cpus,
+		ramMiB:      *ram,
+		fprMode:     fprMode,
+		logLevel:    *logLevel,
+		netFD:       -1,
 	}
-	cfg := C.nanoc_krun_cfg{
-		kernel:       cs(filepath.Join(*assets, "Image")),
-		initrd:       cs(envOr("NANOC_KRUN_INITRD", filepath.Join(*assets, "initramfs.cpio.gz"))),
-		cmdline:      cs(cmdline),
-		modloop:      cs(filepath.Join(*assets, "modloop-virt")),
-		data:         cs(data),
-		share:        cs(*dir),
-		sock_docker:  cs(filepath.Join(*sockDir, "vsock-2375.sock")),
-		sock_control: cs(filepath.Join(*sockDir, "vsock-2376.sock")),
-		cpus:         C.int(*cpus),
-		ram_mib:      C.int(*ram),
-		fpr_mode:     C.int(fprMode),
-		log_level:    C.int(*logLevel),
-	}
-	if serial {
-		cfg.serial = 1
-	}
-	cfg.net_fd = -1
 	if !*noNet {
 		vn, fd, err := startNetwork()
 		if err != nil {
 			return fmt.Errorf("rede: %w", err)
 		}
-		cfg.net_fd = C.int(fd)
-		for i, b := range krunGuestMAC {
-			cfg.mac[i] = C.uchar(b)
-		}
+		o.netFD = fd
 		// portas publicadas pelo Docker no guest em 127.0.0.1:<porta>, entrando
 		// pela pilha do gvisor (o IP do guest não existe fora dela)
 		if !*noDocker {
 			pf := newPortForward()
 			pf.dial = func(addr string) (net.Conn, error) { return vn.Dial("tcp", addr) }
-			go pf.run(filepath.Join(*sockDir, "vsock-2375.sock"))
+			go pf.run(o.sockDocker)
 		}
 	}
 	fmt.Fprintf(os.Stderr, "nanoc krun-boot: ram=%d MiB fpr=%s pid=%d\n", *ram, *fpr, os.Getpid())
-	runtime.LockOSThread()
-	C.nanoc_krun_run(&cfg)
-	return fmt.Errorf("libkrun: %s", C.GoString(C.nanoc_krun_error()))
+	return krunRun(o)
 }

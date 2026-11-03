@@ -3,7 +3,16 @@
 `nanoc krun-boot` boots the regular nanoc guest (same kernel, initramfs, modloop
 and rootfs) on [libkrun](https://github.com/containers/libkrun) instead of
 Virtualization.framework. It exists to measure one thing: whether the guest's
-freed memory goes back to macOS. It is not wired into `nanoc up`.
+freed memory goes back to macOS.
+
+With a `-tags krun` build, `NANOC_BACKEND=krun nanoc up` runs the regular daemon
+on libkrun: same state directory, sockets and control protocol, so `status`,
+`ports`, `down` and `exec` work unchanged and `status` prints `backend:
+libkrun`. There is no balloon controller; the guest gets the whole ceiling
+(`NANOC_MEM_MB`, half the Mac's RAM by default) and free page reporting gives
+back what it frees. The daemon drops the guest's page cache every 45 s, as
+OrbStack's vinit does, since cached file pages are not free memory and would
+otherwise never return to macOS.
 
 libkrun has no built-in NAT, so `krun-boot` embeds
 [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock): a datagram
@@ -81,8 +90,30 @@ The download is slow. The test runs the VM under `taskpolicy -b` (background
 QoS, to spare an 8 GB Mac) and the virtio-net device has no offloads (features
 0, MTU 1500), so the number is not a ceiling yet.
 
+## `nanoc up` (2026-11-02)
+
+`up-test.sh` drives the CLI with `NANOC_BACKEND=krun` and a test `data.img`
+(`NANOC_DATA`), without background QoS:
+
+| Check | Result |
+|---|---|
+| `nanoc up` / `nanoc down` | 6 s / 4 s |
+| `status`, `ports`, port forward to `127.0.0.1:8080` | ok |
+| `docker exec` without stdin | ok |
+| `-v /Users:/Users` in a container | ok |
+| 50 MB download in a container | 3 s |
+| VM `MEM` with the 7 dbolt containers that started on it, 60 s idle | 1622 MB (the VZ daemon held 1772 MB) |
+
+Known limit: libkrun's vsock proxy turns a half-close from the Mac side into a
+reset, so the response was lost and every `docker exec` printed nothing (the
+Docker CLI closes its write side). The daemon no longer forwards that half-close;
+the cost is that piped stdin never ends, so `echo x | docker exec -i c cat` and
+`psql < dump.sql` hang. The real fix belongs in libkrun
+(`unix_proxy/unix.rs`, `recv()` returning 0 should send a vsock shutdown, not a
+reset).
+
 ## Not done
 
-`nanoc up` integration, network throughput (offloads, a larger MTU, no
+The libkrun half-close fix, network throughput (offloads, a larger MTU, no
 background QoS), long uptime, real container load, and shipping the Rust dylib
 through Homebrew. libkrun 2.0 is not released yet.
