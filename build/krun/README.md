@@ -56,7 +56,14 @@ git apply ../nano-container/build/krun/libkrun-nanoc-302d447d.patch
 cargo build --release -p libkrun --no-default-features --features blk,net,ffi
 ```
 
-Then build nanoc with the `krun` tag, point the binary at the dylib and sign it
+`build/krun/build-libkrun.sh <dir>` does all of that (clone, checkout, patch,
+cargo). It needs several minutes and GBs of RAM: on an 8 GB Mac stop the nanoc VM
+first and set `CARGO_BUILD_JOBS=2`. The CI and the release build it on GitHub's
+macOS runners, and `make release LIBKRUN=<dir>` packs `lib/libkrun.2.dylib` with
+an nanoc built with `-tags krun` that finds it through `@executable_path/../lib`,
+which is where Homebrew puts it.
+
+To build by hand instead, build nanoc with the `krun` tag, point the binary at the dylib and sign it
 with `build/krun.entitlements` (`com.apple.security.hypervisor`):
 
 ```bash

@@ -5,3 +5,4 @@
 /data.img
 *.sock
 guest/notify/*.ko
+/lib/

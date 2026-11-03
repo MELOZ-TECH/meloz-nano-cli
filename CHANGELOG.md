@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NANOC_KRUN_NOTIFY=0` turns it off.
 - With the module present, `/Users` on the libkrun backend caches lookups and
   attributes for 10 s (100 ms without it); `NANOC_KRUN_USERS_CACHE_MS` overrides.
+- Releases bundle `lib/libkrun.2.dylib` (libkrun built in CI from a pinned commit
+  plus the nanoc patch) and the binary includes the libkrun backend, still opt-in
+  with `NANOC_BACKEND=krun`. A CI job builds and packages it on every PR.
 - linux/amd64 images run through Rosetta on the Virtualization.framework backend
   when it is installed on the Mac (public `VZLinuxRosettaDirectoryShare` API),
   instead of qemu-user: a CPU-bound test went from 71 s to 8.7 s.
