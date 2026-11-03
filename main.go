@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 
 	"github.com/Code-Hex/vz/v3"
 )
@@ -86,6 +88,24 @@ func main() {
 			for _, l := range readEvents(eventsFile(stateDir), n, "") {
 				fmt.Println(l)
 			}
+			return
+		case "trust":
+			// põe a CA dos nomes *.nanoc.local no Keychain do usuário; o macOS pede a
+			// senha. Sem isso o navegador avisa que o certificado não é confiável.
+			stateDir, _, _ := paths()
+			if _, err := loadOrCreateCA(stateDir); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			home, _ := os.UserHomeDir()
+			c := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-k",
+				filepath.Join(home, "Library", "Keychains", "login.keychain-db"), filepath.Join(stateDir, "ca.pem"))
+			c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+			if err := c.Run(); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			fmt.Println("CA do nanoc confiável no Keychain: https://<container>" + domainSuffix + " abre sem aviso")
 			return
 		case "mcp":
 			if err := runMCP(os.Stdin, os.Stdout); err != nil {

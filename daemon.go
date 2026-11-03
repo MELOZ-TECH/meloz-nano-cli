@@ -302,6 +302,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	pf := newPortForward()
 	if !noDocker {
 		go pf.run(sockPath)
+		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial)
 	}
 
 	go func() {
