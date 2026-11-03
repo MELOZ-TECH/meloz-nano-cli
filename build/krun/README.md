@@ -32,8 +32,14 @@ libkrun `main` at `a037532` (2.0.0-dev), with `libkrun-a037532.patch` applied:
 - 2-byte MMIO writes are handled on macOS (the Linux PL011 driver does them,
   and libkrun panicked with `unsupported mmio len=2`).
 
+and with `libkrun-vsock-half-close.patch`: the unix vsock proxy turns a
+half-close from the Mac side into a vsock shutdown instead of a reset, so the
+guest can still answer (every `docker exec` depends on it), and accepted sockets
+get `SO_NOSIGPIPE`.
+
 ```bash
 cd libkrun && git apply ../nano-container/build/krun/libkrun-a037532.patch
+git am ../nano-container/build/krun/libkrun-vsock-half-close.patch
 cargo build --release -p libkrun --no-default-features --features blk,net,ffi
 ```
 
@@ -100,20 +106,17 @@ QoS, to spare an 8 GB Mac) and the virtio-net device has no offloads (features
 | `nanoc up` / `nanoc down` | 6 s / 4 s |
 | `status`, `ports`, port forward to `127.0.0.1:8080` | ok |
 | `docker exec` without stdin | ok |
+| piped stdin (`hc-test.sh`): `echo x \| docker exec -i`, empty stdin, 8 MB in and back (SHA-256 equal), `docker run -i`, `tar` over stdin | ok |
 | `-v /Users:/Users` in a container | ok |
 | 50 MB download in a container | 3 s |
 | VM `MEM` with the 7 dbolt containers that started on it, 60 s idle | 1622 MB (the VZ daemon held 1772 MB) |
 
-Known limit: libkrun's vsock proxy turns a half-close from the Mac side into a
-reset, so the response was lost and every `docker exec` printed nothing (the
-Docker CLI closes its write side). The daemon no longer forwards that half-close;
-the cost is that piped stdin never ends, so `echo x | docker exec -i c cat` and
-`psql < dump.sql` hang. The real fix belongs in libkrun
-(`unix_proxy/unix.rs`, `recv()` returning 0 should send a vsock shutdown, not a
-reset).
+Without the half-close patch, unpatched libkrun resets the connection when the
+Mac side closes its write side, and the response is lost: every `docker exec`
+prints nothing.
 
 ## Not done
 
-The libkrun half-close fix, network throughput (offloads, a larger MTU, no
+Sending the half-close fix upstream, network throughput (offloads, a larger MTU, no
 background QoS), long uptime, real container load, and shipping the Rust dylib
 through Homebrew. libkrun 2.0 is not released yet.

@@ -157,12 +157,9 @@ func krunServe(o krunOpts, vn interface {
 						return
 					}
 					defer gc.Close()
-					// o proxy vsock do libkrun transforma o half-close do lado do Mac num
-					// reset e a resposta se perde (o CLI do Docker fecha a escrita em todo
-					// `docker exec`). Até corrigir lá, o fim da escrita não é repassado: só o
-					// stdin por pipe de `docker exec -i` fica sem fim.
-					go func() { _, _ = io.Copy(gc, hc) }()
-					_, _ = io.Copy(hc, gc)
+					// o half-close precisa do libkrun com o fim da escrita corrigido
+					// (shutdown no lugar de reset; ver build/krun/README.md)
+					proxyCopy(hc, gc)
 				}(hc)
 			}
 		}()
