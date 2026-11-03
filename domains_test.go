@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bufio"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"testing"
@@ -24,14 +26,50 @@ func TestDomainLabel(t *testing.T) {
 
 func TestDomainTargets(t *testing.T) {
 	body := []byte(`[
-	 {"Names":["/web"],"Ports":[{"PrivatePort":443,"PublicPort":8443,"Type":"tcp"},{"PrivatePort":80,"PublicPort":8081,"Type":"tcp"},{"PrivatePort":80,"PublicPort":8081,"Type":"tcp"}]},
-	 {"Names":["/api"],"Labels":{"nanoc.port":"9000"},"Ports":[{"PrivatePort":80,"PublicPort":8082,"Type":"tcp"},{"PrivatePort":9000,"PublicPort":19000,"Type":"tcp"}]},
+	 {"Names":["/web"],"Ports":[{"PrivatePort":443,"PublicPort":8443,"Type":"tcp"},{"PrivatePort":80,"PublicPort":8081,"Type":"tcp"},{"PrivatePort":80,"PublicPort":8081,"Type":"tcp"}],
+	  "NetworkSettings":{"Networks":{"bridge":{"IPAddress":"172.17.0.2"}}}},
+	 {"Names":["/api"],"Labels":{"nanoc.port":"9000"},"Ports":[{"PrivatePort":80,"PublicPort":8082,"Type":"tcp"}],
+	  "NetworkSettings":{"Networks":{"app_default":{"IPAddress":"172.18.0.3"}}}},
+	 {"Names":["/semporta"],"Ports":[{"PrivatePort":3000,"Type":"tcp"}],
+	  "NetworkSettings":{"Networks":{"bridge":{"IPAddress":"172.17.0.4"}}}},
 	 {"Names":["/db"],"Ports":[{"PrivatePort":5432,"PublicPort":1111,"Type":"tcp"}]},
-	 {"Names":["/dns"],"Ports":[{"PrivatePort":53,"PublicPort":5353,"Type":"udp"}]},
-	 {"Names":["/semporta"],"Ports":[{"PrivatePort":80,"Type":"tcp"}]}]`)
-	want := map[string]int{"web": 8081, "api": 19000, "db": 1111}
+	 {"Names":["/dns"],"Ports":[{"PrivatePort":53,"Type":"udp"}],"NetworkSettings":{"Networks":{"bridge":{"IPAddress":"172.17.0.5"}}}},
+	 {"Names":["/nada"],"NetworkSettings":{"Networks":{"bridge":{"IPAddress":"172.17.0.6"}}}}]`)
+	want := map[string]domainTarget{
+		"web":      {IP: "172.17.0.2", Port: 80, Pub: 8081},
+		"api":      {IP: "172.18.0.3", Port: 9000},
+		"semporta": {IP: "172.17.0.4", Port: 3000},
+		"db":       {Port: 5432, Pub: 1111},
+	}
 	if got := domainTargets(body); !reflect.DeepEqual(got, want) {
 		t.Errorf("%v, quero %v", got, want)
+	}
+}
+
+func TestRelayDialer(t *testing.T) {
+	agent := func(ack byte) func() (net.Conn, error) {
+		return func() (net.Conn, error) {
+			mac, guest := net.Pipe()
+			go func() {
+				addr, _ := bufio.NewReader(guest).ReadString('\n')
+				if addr == "172.17.0.2:80\n" {
+					guest.Write([]byte{ack, 'o', 'k'})
+				}
+				guest.Close()
+			}()
+			return mac, nil
+		}
+	}
+	c, err := relayDialer(agent(relayOK))("172.17.0.2:80")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(c)
+	if string(b) != "ok" {
+		t.Errorf("depois da confirmação veio %q", b)
+	}
+	if _, err := relayDialer(agent(0))("172.17.0.2:80"); err == nil {
+		t.Error("sem a confirmação o repasse devia falhar")
 	}
 }
 
@@ -66,11 +104,11 @@ func TestLocalCA(t *testing.T) {
 }
 
 func TestDomainProxyPort(t *testing.T) {
-	d := newDomainProxy(nil)
-	d.set(map[string]int{"web": 8081})
+	d := newDomainProxy(nil, nil)
+	d.set(map[string]domainTarget{"web": {Pub: 8081}})
 	for host, want := range map[string]int{"web.nanoc.local": 8081, "WEB.nanoc.local:443": 8081, "web.example.com": 0, "api.nanoc.local": 0} {
-		if got, _ := d.port(host); got != want {
-			t.Errorf("%q: %d, quero %d", host, got, want)
+		if got, _ := d.target(host); got.Pub != want {
+			t.Errorf("%q: %d, quero %d", host, got.Pub, want)
 		}
 	}
 }
@@ -103,8 +141,10 @@ func TestLoopbackOnly(t *testing.T) {
 		n, _ := c.Read(b)
 		return string(b[:n])
 	}
-	if got := read(fmt.Sprintf("127.0.0.1:%d", port)); got != "ok" {
-		t.Errorf("127.0.0.1: %q", got)
+	for _, local := range []string{"127.0.0.1", "[::1]"} {
+		if got := read(fmt.Sprintf("%s:%d", local, port)); got != "ok" {
+			t.Errorf("%s: %q", local, got)
+		}
 	}
 	// pelo IP da rede local, se houver: a conexão é fechada sem resposta
 	if addrs, _ := net.InterfaceAddrs(); len(addrs) > 0 {

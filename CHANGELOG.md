@@ -22,10 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NANOC_KRUN_NOTIFY=0` turns it off.
 - With the module present, `/Users` on the libkrun backend caches lookups and
   attributes for 10 s (100 ms without it); `NANOC_KRUN_USERS_CACHE_MS` overrides.
-- `https://<container>.nanoc.local` for every container with a published TCP
-  port, on both backends: names registered in the Mac's mDNSResponder (local
-  only, no admin), a proxy on 443 bound to the loopback, and a local CA limited
-  to `*.nanoc.local`. `nanoc trust` adds that CA to the Keychain.
+- `https://<container>.nanoc.local` for every container with an exposed TCP
+  port, published or not, on both backends: names registered in the Mac's
+  mDNSResponder (A and AAAA, local only, no admin), a proxy on 443 bound to the
+  loopback, a local CA limited to `*.nanoc.local`, and a new guest agent port
+  (vsock 2377) that connects to the container on the Docker network. Older guest
+  assets fall back to the published port. `nanoc trust` adds the CA to the
+  Keychain.
 - Releases bundle `lib/libkrun.2.dylib` (libkrun built in CI from a pinned commit
   plus the nanoc patch) and the binary includes the libkrun backend, still opt-in
   with `NANOC_BACKEND=krun`. A CI job builds and packages it on every PR.

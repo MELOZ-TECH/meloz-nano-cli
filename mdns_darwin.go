@@ -7,11 +7,15 @@ package main
 static void nanocRegisterReply(DNSServiceRef sd, DNSRecordRef rr, DNSServiceFlags flags,
 	DNSServiceErrorType err, void *ctx) {}
 
-// Registro A só desta máquina (LocalOnly): não vai para a rede.
-static DNSServiceErrorType nanocRegisterA(DNSServiceRef sd, DNSRecordRef *rr, const char *name) {
-	static const unsigned char loopback[4] = {127, 0, 0, 1};
-	return DNSServiceRegisterRecord(sd, rr, kDNSServiceFlagsShared, kDNSServiceInterfaceIndexLocalOnly,
-		name, kDNSServiceType_A, kDNSServiceClass_IN, sizeof(loopback), loopback, 30,
+// Registros A (127.0.0.1) e AAAA (::1) só desta máquina (LocalOnly): não vão
+// para a rede. Com os dois, quem pede A e AAAA (curl, navegadores) recebe as duas
+// respostas na hora; só com o A, o macOS esperava 5 s pelo AAAA.
+static DNSServiceErrorType nanocRegister(DNSServiceRef sd, DNSRecordRef *rr, const char *name, int v6) {
+	static const unsigned char v4addr[4] = {127, 0, 0, 1};
+	static const unsigned char v6addr[16] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1};
+	return DNSServiceRegisterRecord(sd, rr, kDNSServiceFlagsUnique, kDNSServiceInterfaceIndexLocalOnly,
+		name, v6 ? kDNSServiceType_AAAA : kDNSServiceType_A, kDNSServiceClass_IN,
+		v6 ? sizeof(v6addr) : sizeof(v4addr), v6 ? (const void *)v6addr : (const void *)v4addr, 30,
 		nanocRegisterReply, NULL);
 }
 */
@@ -22,17 +26,17 @@ import (
 	"unsafe"
 )
 
-// localNames mantém no mDNSResponder do Mac um registro A 127.0.0.1 para cada
-// nome *.nanoc.local, visível só nesta máquina e sem precisar de admin (o
+// localNames mantém no mDNSResponder do Mac registros A 127.0.0.1 e AAAA ::1 para
+// cada nome *.nanoc.local, visível só nesta máquina e sem precisar de admin (o
 // /etc/resolver exigiria). Os registros somem quando a conexão fecha.
 type localNames struct {
 	mu   sync.Mutex
 	sd   C.DNSServiceRef
-	recs map[string]C.DNSRecordRef
+	recs map[string][2]C.DNSRecordRef
 }
 
 func newLocalNames() *localNames {
-	return &localNames{recs: map[string]C.DNSRecordRef{}}
+	return &localNames{recs: map[string][2]C.DNSRecordRef{}}
 }
 
 func (l *localNames) set(names []string) {
@@ -54,9 +58,13 @@ func (l *localNames) set(names []string) {
 	for _, n := range names {
 		want[n] = true
 	}
-	for n, rr := range l.recs {
+	for n, rrs := range l.recs {
 		if !want[n] {
-			C.DNSServiceRemoveRecord(l.sd, rr, 0)
+			for _, rr := range rrs {
+				if rr != nil {
+					C.DNSServiceRemoveRecord(l.sd, rr, 0)
+				}
+			}
 			delete(l.recs, n)
 		}
 	}
@@ -65,10 +73,13 @@ func (l *localNames) set(names []string) {
 			continue
 		}
 		cs := C.CString(n + ".")
-		var rr C.DNSRecordRef
-		if C.nanocRegisterA(l.sd, &rr, cs) == C.kDNSServiceErr_NoError {
-			l.recs[n] = rr
+		var rrs [2]C.DNSRecordRef
+		for v6 := range rrs {
+			if C.nanocRegister(l.sd, &rrs[v6], cs, C.int(v6)) != C.kDNSServiceErr_NoError {
+				rrs[v6] = nil
+			}
 		}
+		l.recs[n] = rrs
 		C.free(unsafe.Pointer(cs))
 	}
 }

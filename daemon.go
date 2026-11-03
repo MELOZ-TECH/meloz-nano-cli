@@ -33,6 +33,7 @@ func guestIP() string {
 const (
 	guestDockerPort  = 2375
 	guestControlPort = 2376
+	guestRelayPort   = 2377
 )
 
 // daemonLock fica aberto enquanto o daemon vive: o flock some junto com o processo.
@@ -302,7 +303,8 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	pf := newPortForward()
 	if !noDocker {
 		go pf.run(sockPath)
-		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial)
+		relay := relayDialer(func() (net.Conn, error) { return dialGuest(vm, guestRelayPort) })
+		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial, relay)
 	}
 
 	go func() {

@@ -160,12 +160,14 @@ Environment variables: `NANOC_MEM_MB` (memory ceiling, default half the Mac's RA
 
 ### Container names
 
-Every container with a published TCP port answers at
-`https://<container>.nanoc.local`: `docker run -d --name web -p 8081:80 nginx`
-opens at `https://web.nanoc.local`. The name resolves to `127.0.0.1` through the
-Mac's mDNSResponder (local only, no admin), and a proxy on port 443, bound to
-the loopback and refusing anything not from `127.0.0.0/8`, forwards to the
-container's published port. When a container publishes several ports, the proxy
+Every container with an exposed TCP port answers at
+`https://<container>.nanoc.local`, published or not: `docker run -d --name web
+nginx` opens at `https://web.nanoc.local`. The name resolves to `127.0.0.1` and
+`::1` through the Mac's mDNSResponder (local only, no admin). A proxy on port
+443, bound to the loopback and refusing anything not from it, reaches the
+container through the guest agent (vsock port 2377), which connects to the
+container's address on the Docker network; with older guest assets it falls
+back to the published port. When a container exposes several ports the proxy
 picks 80, 8080, 3000, 8000, 5000, 443 or 8443 in that order, or the one in the
 `nanoc.port` label. Certificates come from a local CA in `~/.nanoc/ca.pem`,
 limited to `*.nanoc.local`; run `nanoc trust` once so browsers accept it. Plain

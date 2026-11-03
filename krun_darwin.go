@@ -51,7 +51,7 @@ static int nanoc_fail(const char *what, KrunError err) {
 typedef struct {
 	const char *kernel, *initrd, *cmdline;
 	const char *modloop, *data, *share, *users;
-	const char *sock_docker, *sock_control;
+	const char *sock_docker, *sock_control, *sock_relay;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
 	int net_fd, users_cache_ms;
 	unsigned int net_features;
@@ -104,6 +104,7 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	TRY("vsock", vs = krun_vsock_device_new(3, 0, &err));
 	krun_vsock_device_add_unix_port(vs, 2375, KRUN_STR(c->sock_docker), true);
 	krun_vsock_device_add_unix_port(vs, 2376, KRUN_STR(c->sock_control), true);
+	krun_vsock_device_add_unix_port(vs, 2377, KRUN_STR(c->sock_relay), true);
 	krun_mmio_device_manager_add(devs, vs);
 
 	// quadros Ethernet crus, um por datagrama (o protocolo "vfkit" do gvisor-tap-vsock)
@@ -264,7 +265,7 @@ func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
 // krunOpts: o que muda entre o `krun-boot` de teste e o daemon
 type krunOpts struct {
 	kernel, initrd, modloop, data, share, users string
-	sockDocker, sockControl                     string
+	sockDocker, sockControl, sockRelay          string
 	cmdline                                     string
 	cpus, ramMiB, fprMode, logLevel             int
 	netFD                                       int // -1: sem rede
@@ -285,7 +286,7 @@ func krunRun(o krunOpts) error {
 			C.free(unsafe.Pointer(p))
 		}
 	}()
-	for _, p := range []string{o.sockDocker, o.sockControl} {
+	for _, p := range []string{o.sockDocker, o.sockControl, o.sockRelay} {
 		_ = os.Remove(p)
 	}
 	cfg := C.nanoc_krun_cfg{
@@ -298,6 +299,7 @@ func krunRun(o krunOpts) error {
 		users:        cs(o.users),
 		sock_docker:  cs(o.sockDocker),
 		sock_control: cs(o.sockControl),
+		sock_relay:   cs(o.sockRelay),
 		cpus:         C.int(o.cpus),
 		ram_mib:      C.int(o.ramMiB),
 		fpr_mode:     C.int(o.fprMode),
@@ -379,6 +381,7 @@ func krunBoot(args []string) error {
 		share:       *dir,
 		sockDocker:  filepath.Join(*sockDir, "vsock-2375.sock"),
 		sockControl: filepath.Join(*sockDir, "vsock-2376.sock"),
+		sockRelay:   filepath.Join(*sockDir, "vsock-2377.sock"),
 		cmdline:     krunCmdline(created, *noDocker),
 		cpus:        *cpus,
 		ramMiB:      *ram,

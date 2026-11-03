@@ -81,6 +81,7 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 		users:       users,
 		sockDocker:  agentDocker,
 		sockControl: agentControl,
+		sockRelay:   filepath.Join(stateDir, "krun-2377.sock"),
 		cmdline:     cmdline,
 		cpus:        2,
 		ramMiB:      int(memBytes() >> 20),
@@ -176,7 +177,8 @@ func krunServe(o krunOpts, vn interface {
 			}
 		}()
 		go pf.run(sockPath)
-		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial)
+		relay := relayDialer(func() (net.Conn, error) { return net.Dial("unix", o.sockRelay) })
+		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial, relay)
 		go krunNotify(o.sockControl, sockPath, ev)
 		fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
 	}
