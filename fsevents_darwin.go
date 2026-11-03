@@ -109,18 +109,22 @@ func (s *fsStream) stop() {
 // descarta o cache daquele arquivo e os containers recebem o evento do inotify, o
 // que faz o hot reload funcionar sem polling.
 func krunNotify(agentControl, dockerSock, ev string) {
+	if os.Getenv("NANOC_KRUN_NOTIFY") == "0" {
+		return
+	}
+	// o modloop dos assets traz o módulo (guest/notify/pack-modloop.sh); um .ko
+	// avulso, que o guest lê pelo compartilhamento de /Users, serve para testar
 	ko := envOr("NANOC_KRUN_NOTIFY_KO", filepath.Join(os.Getenv("HOME"), ".nanoc", "nanoc_notify.ko"))
-	if _, err := os.Stat(ko); err != nil || os.Getenv("NANOC_KRUN_NOTIFY") == "0" {
-		return
-	}
-	// o guest vê o .ko pelo compartilhamento de /Users, no mesmo caminho
 	r := krunAgent(agentControl, map[string]any{"cmd": "run", "argv": []string{"sh", "-c",
-		"[ -e /dev/nanoc_notify ] || insmod \"$1\"; [ -e /dev/nanoc_notify ]", "_", ko}})
-	if r["ok"] != true {
-		logEvent(ev, "notify_off", map[string]any{"error": fmt.Sprint(r["message"], r["output"])})
+		"[ -e /dev/nanoc_notify ] || modprobe nanoc_notify 2>/dev/null || { [ -f \"$1\" ] && insmod \"$1\"; }; [ -e /dev/nanoc_notify ]",
+		"_", ko}})
+	// exit_code some do JSON quando é 0
+	if c, _ := r["exit_code"].(float64); r["ok"] != true || c != 0 {
+		logEvent(ev, "notify_off", map[string]any{"message": r["message"], "output": r["output"],
+			"exit_code": r["exit_code"]})
 		return
 	}
-	logEvent(ev, "notify_ready", map[string]any{"ko": ko})
+	logEvent(ev, "notify_ready", nil)
 
 	ch := make(chan fsEvent, 4096)
 	go notifySender(agentControl, ch)

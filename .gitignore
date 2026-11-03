@@ -4,3 +4,4 @@
 /.cache/
 /data.img
 *.sock
+guest/notify/*.ko
