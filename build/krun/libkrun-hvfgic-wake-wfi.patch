@@ -1,0 +1,121 @@
+From 03ecca4c5a2e2773a108486cd8d458639cfada91 Mon Sep 17 00:00:00 2001
+From: Romeu Melur <romeumello@icloud.com>
+Date: Tue, 3 Nov 2026 12:00:19 -0300
+Subject: [PATCH] devices/hvfgicv3: wake vCPUs parked on WFI when raising an
+ SPI
+
+With the in-kernel GIC, set_irq only calls hv_gic_set_spi. HVF delivers
+the SPI to a vCPU that is running, but a vCPU that trapped WFI is parked
+in wait_for_event, waiting on its WFE channel or its vtimer deadline.
+Nothing sends on that channel for an SPI, so an idle guest only sees a
+device completion when its next timer fires.
+
+On an idle 2-vCPU guest on macOS this made every virtio-fs request cost
+about 1 ms: a negative lookup took 975-1075 us, creating a file
+2.6-3.4 ms. Waking the parked vCPUs after raising the SPI brings those to
+44-73 us and 293 us, and also helps a busy guest (lookup 154 -> 52 us).
+
+Assisted-by: Claude Code: claude-opus-5.5
+---
+ src/devices/src/legacy/hvfgicv3.rs | 14 ++++++++++++--
+ src/devices/src/legacy/vcpu.rs     | 14 ++++++++++++++
+ src/libkrun/src/vmm/builder.rs     |  2 +-
+ 3 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/src/devices/src/legacy/hvfgicv3.rs b/src/devices/src/legacy/hvfgicv3.rs
+index b15500f7..ff3b1a78 100644
+--- a/src/devices/src/legacy/hvfgicv3.rs
++++ b/src/devices/src/legacy/hvfgicv3.rs
+@@ -2,10 +2,11 @@
+ // SPDX-License-Identifier: Apache-2.0
+ 
+ use std::io;
+-use std::sync::LazyLock;
++use std::sync::{Arc, LazyLock};
+ 
+ use crate::Error as DeviceError;
+ use crate::bus::BusDevice;
++use crate::legacy::VcpuList;
+ use crate::legacy::gic::GICDevice;
+ use crate::legacy::irqchip::IrqChipT;
+ 
+@@ -39,6 +40,9 @@ pub struct HvfGicV3 {
+ 
+     /// Number of CPUs handled by the device
+     vcpu_count: u64,
++
++    /// Used to wake vCPUs parked on WFI when an SPI is raised
++    vcpu_list: Arc<VcpuList>,
+ }
+ 
+ static HVF: LazyLock<libloading::Library> = LazyLock::new(|| unsafe {
+@@ -49,7 +53,8 @@ static HVF: LazyLock<libloading::Library> = LazyLock::new(|| unsafe {
+ });
+ 
+ impl HvfGicV3 {
+-    pub fn new(vcpu_count: u64) -> Result<Self, Error> {
++    pub fn new(vcpu_list: Arc<VcpuList>) -> Result<Self, Error> {
++        let vcpu_count = vcpu_list.get_cpu_count();
+         let bindings = unsafe {
+             HvfGicBindings {
+                 hv_gic_create: HVF.get(b"hv_gic_create").map_err(Error::FindSymbol)?,
+@@ -114,6 +119,7 @@ impl HvfGicV3 {
+             bindings,
+             properties: [dist_addr, dist_size, redists_addr, redists_size],
+             vcpu_count,
++            vcpu_list,
+         })
+     }
+ }
+@@ -134,6 +140,10 @@ impl IrqChipT for HvfGicV3 {
+     ) -> Result<(), DeviceError> {
+         if let Some(irq_line) = irq_line {
+             let ret = unsafe { (self.bindings.hv_gic_set_spi)(irq_line, true) };
++            // HVF delivers the SPI to a running vCPU, but a vCPU parked in
++            // `wait_for_event` after trapping WFI would only notice it at its next
++            // vtimer deadline, adding up to a timer period to every completion.
++            self.vcpu_list.wake_waiting();
+             if ret != HV_SUCCESS {
+                 Err(DeviceError::FailedSignalingUsedQueue(
+                     std::io::Error::other("HVF returned error when setting SPI"),
+diff --git a/src/devices/src/legacy/vcpu.rs b/src/devices/src/legacy/vcpu.rs
+index 201c40ce..65025033 100644
+--- a/src/devices/src/legacy/vcpu.rs
++++ b/src/devices/src/legacy/vcpu.rs
+@@ -106,6 +106,20 @@ impl VcpuList {
+             .set_irq_common(irq);
+     }
+ 
++    /// Wakes every vCPU parked waiting for an interrupt. Used by the in-kernel
++    /// GIC, which injects interrupts without going through `pending_irqs`.
++    pub fn wake_waiting(&self) {
++        for vcpu in &self.vcpus {
++            let mut vcpu = vcpu.lock().unwrap();
++            if let VcpuStatus::Waiting = vcpu.status {
++                if let Some(sender) = vcpu.wfe_sender.as_ref() {
++                    let _ = sender.send(vcpu.vcpuid as u32);
++                }
++                vcpu.status = VcpuStatus::Running;
++            }
++        }
++    }
++
+     pub fn register(&self, vcpuid: u64, wfe_sender: Sender<u32>) {
+         assert!(vcpuid < self.cpu_count);
+         self.vcpus[vcpuid as usize].lock().unwrap().wfe_sender = Some(wfe_sender);
+diff --git a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
+index bb1f8e30..f8c7e029 100644
+--- a/src/libkrun/src/vmm/builder.rs
++++ b/src/libkrun/src/vmm/builder.rs
+@@ -1307,7 +1307,7 @@ pub fn build_microvm(
+         intc = {
+             // If the system supports the in-kernel GIC, use it. Otherwise, fall back to the
+             // userspace implementation.
+-            let gic = match HvfGicV3::new(vm_resources.vm_config().vcpu_count.unwrap() as u64) {
++            let gic = match HvfGicV3::new(vcpu_list.clone()) {
+                 Ok(hvfgic) => IrqChipDevice::new(Box::new(hvfgic)),
+                 Err(_) => IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone()))),
+             };
+-- 
+2.38.1
+

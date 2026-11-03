@@ -195,6 +195,33 @@ containers, the 2 s gap before a new bind mount is watched, and a dropped event.
 A run with the new default: 9/9 changes seen within 3 ms. Numbers on this 8 GB
 Mac are noisy (the 16.8 s read at 5 s is one outlier).
 
+## Idle guests and the in-kernel GIC (2026-11-03)
+
+`lat.py` times one virtio-fs request at a time from a container. On an idle
+nanoc VM a negative lookup took about 1 ms (OrbStack: 12 µs), and the busy dbolt
+VM 154 µs. The cause is in libkrun: with Apple's in-kernel GIC (`hv_gic`, used
+whenever macOS has it), `HvfGicV3::set_irq` only calls `hv_gic_set_spi`. A vCPU
+that trapped WFI sits in `wait_for_event` and nothing wakes it for an SPI, so
+the guest sees a device completion only at its next timer deadline.
+`libkrun-hvfgic-wake-wfi.patch` wakes the parked vCPUs after raising the SPI.
+
+| per request, idle VM | before | with the patch | OrbStack |
+|---|---|---|---|
+| negative lookup | 975–1075 µs | 44–73 µs | 12–13 µs |
+| create file | 2570–3360 µs | 293 µs | 62–73 µs |
+| delete file | 5530–9330 µs | 168–196 µs | 29–38 µs |
+
+`fsbench.sh` on an idle VM went from find/stat 0.27/0.39 s to 0.16/0.17 s, reading
+10,000 files from 3.5 to 2.5 s, deleting 2,000 from 1.05 to 0.46 s, and 300 MB
+from 0.41/1.01 s (read/write) to 0.27/0.76 s. Waking between vCPUs was already
+fine (`ipi.py`: 52 µs round trip, OrbStack 29 µs).
+
+The rest of the gap is the transport itself. OrbStack's guest kernel sends small
+synchronous FUSE requests with an `HVC 0xC600E004` from `virtio_fs_enqueue_req`
+(interrupts masked, at most 3 in and 2 out arguments, 128 pages) and the host
+answers them on the vCPU thread, with no virtqueue, no worker thread and no
+interrupt; anything else falls back to the virtqueue.
+
 ## Not done
 
 Building `nanoc_notify.ko` natively in CI (the release job runs it under QEMU), TSO (needs libkrun to pass the virtio-net header over the socket), background
