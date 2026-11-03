@@ -27,7 +27,7 @@ it off.
 
 libkrun `main` at `302d447d` (2.0.0-dev), which has the two macOS fixes this
 backend first needed (libkrun/libkrun#971: `arm,primecell` on the PL011 node,
-without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus three
+without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus four
 patches sent upstream:
 
 - `libkrun-vsock-half-close.patch` (libkrun/libkrun#973): the unix vsock proxy
@@ -39,11 +39,16 @@ patches sent upstream:
   `krun_fs_device_set_cache_timeouts`, used for the /Users cache below;
 - `libkrun-hvfgic-wake-wfi.patch` (libkrun/libkrun#975): with Apple's in-kernel
   GIC, a device interrupt now wakes a vCPU parked on WFI (see "Idle guests").
+- `libkrun-vsock-nonblocking-send.patch` (libkrun/libkrun#978, on top of #973):
+  the unix vsock proxy no longer blocks when the Mac side stops reading. Before,
+  `docker export | docker run -i` froze the whole guest for an hour (RCU stalls,
+  a CPU spinning on the virtio console), because one full host socket blocked
+  the thread that serves every vsock connection and the console.
 
-The three touch the same list of end-to-end tests, so they do not apply one after
-another; `libkrun-nanoc-302d447d.patch` is the three together, as built and tested
-here (`make test TEST='*'`: 20 of 21, the failure is the pre-existing
-`virtiofs-misc`):
+They touch the same list of end-to-end tests, so they do not apply one after
+another; `libkrun-nanoc-302d447d.patch` is all of them together, as built here
+(`make test TEST='*'` gave 20 of 21 before #978, the failure being the
+pre-existing `virtiofs-misc`; with #978, `vsock-*` 7/7 and `tsi-*` 3/3):
 
 ```bash
 cd libkrun && git checkout 302d447d

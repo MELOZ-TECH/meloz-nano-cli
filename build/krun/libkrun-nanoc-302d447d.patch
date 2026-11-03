@@ -284,34 +284,64 @@ index 2ad76395..c1dc693e 100644
      fn null_filesystems_reject_cache_policy_changes() {
          let mut fs = filesystem(None);
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/mod.rs b/src/devices/src/virtio/vsock/unix_proxy/mod.rs
-index 15818d18..ee827bc3 100644
+index 15818d18..321b6150 100644
 --- a/src/devices/src/virtio/vsock/unix_proxy/mod.rs
 +++ b/src/devices/src/virtio/vsock/unix_proxy/mod.rs
-@@ -39,6 +39,7 @@ pub struct UnixProxy {
+@@ -39,6 +39,15 @@ pub struct UnixProxy {
      pub(crate) local_port: u32,
      pub(crate) control_port: u32,
      pub(crate) peer_shutdown: u32,
 +    pub(crate) host_read_closed: bool,
++    /// Guest data the host socket did not take yet. The guest can't send more than
++    /// the credit we return as we write, so this stays below `CONN_TX_BUF_SIZE`.
++    pub(crate) pending_tx: Vec<u8>,
++    /// The guest shut down its send side while `pending_tx` still had data.
++    pub(crate) shutdown_write_pending: bool,
++    /// The guest shut down both sides while `pending_tx` still had data: the
++    /// connection closes once that data is written.
++    pub(crate) close_after_flush: bool,
      pub(crate) peer_fwd_cnt: Wrapping<u32>,
      pub(crate) peer_buf_alloc: u32,
      pub(crate) tx_cnt: Wrapping<u32>,
-@@ -73,6 +74,7 @@ impl UnixProxy {
+@@ -48,6 +57,15 @@ pub struct UnixProxy {
+ }
+ 
+ impl UnixProxy {
++    /// Resets the guest side and lets the muxer remove this connection.
++    pub(crate) fn close(&mut self) -> ProxyUpdate {
++        self.push_reset();
++        let mut update = self.release();
++        update.polling = Some((self.id, self.as_raw_fd(), EventSet::empty()));
++        update.signal_queue = true;
++        update
++    }
++
+     #[allow(clippy::too_many_arguments)]
+     pub fn new(
+         id: u64,
+@@ -73,6 +91,10 @@ impl UnixProxy {
              local_port,
              control_port,
              peer_shutdown: 0,
 +            host_read_closed: false,
++            pending_tx: Vec::new(),
++            shutdown_write_pending: false,
++            close_after_flush: false,
              peer_fwd_cnt: Wrapping(0),
              peer_buf_alloc: 0,
              tx_cnt: Wrapping(0),
-@@ -101,6 +103,7 @@ impl UnixProxy {
+@@ -101,6 +123,10 @@ impl UnixProxy {
              peer_port,
              control_port: 0,
              peer_shutdown: 0,
 +            host_read_closed: false,
++            pending_tx: Vec::new(),
++            shutdown_write_pending: false,
++            close_after_flush: false,
              fd,
              status: ProxyStatus::ReverseInit,
              mem,
-@@ -139,24 +142,39 @@ impl UnixProxy {
+@@ -139,24 +165,39 @@ impl UnixProxy {
          let mut wait_credit = false;
          let mut queue = self.queue.lock().unwrap();
  
@@ -356,11 +386,33 @@ index 15818d18..ee827bc3 100644
                  },
                  Err(e) => {
                      debug!("recv_pkt: RX queue error: {e:?}");
+@@ -274,12 +315,16 @@ impl Proxy for UnixProxy {
+             return ProxyUpdate::default();
+         }
+ 
+-        self.push_reset();
+-        let mut update = self.release();
+         self.status = ProxyStatus::Closed;
+-        update.polling = Some((self.id, self.as_raw_fd(), EventSet::empty()));
+-        update.signal_queue = true;
+-        update
++        if !self.pending_tx.is_empty() {
++            // Data the guest already sent still has to reach the host.
++            self.close_after_flush = true;
++            return ProxyUpdate {
++                polling: Some((self.id, self.as_raw_fd(), EventSet::OUT)),
++                ..Default::default()
++            };
++        }
++        self.close()
+     }
+ 
+     fn release(&mut self) -> ProxyUpdate {
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/unix.rs b/src/devices/src/virtio/vsock/unix_proxy/unix.rs
-index 00e62c86..63d26fac 100644
+index 00e62c86..723f2081 100644
 --- a/src/devices/src/virtio/vsock/unix_proxy/unix.rs
 +++ b/src/devices/src/virtio/vsock/unix_proxy/unix.rs
-@@ -44,23 +44,26 @@ pub(crate) fn create_socket(id: u64) -> Result<PlatformHandle, ProxyError> {
+@@ -44,30 +44,39 @@ pub(crate) fn create_socket(id: u64) -> Result<PlatformHandle, ProxyError> {
      };
  
      #[cfg(target_os = "macos")]
@@ -399,8 +451,110 @@ index 00e62c86..63d26fac 100644
 +
  pub(crate) fn switch_to_connected(proxy: &mut super::UnixProxy) {
      proxy.status = ProxyStatus::Connected;
++    // Stay non-blocking (accepted sockets start blocking): a host peer that stops
++    // reading must not block the thread that also runs the other vsock
++    // connections and devices. Data the socket doesn't take waits in `pending_tx`.
      match fcntl(&proxy.fd, FcntlArg::F_GETFL) {
-@@ -91,7 +94,10 @@ fn push_connect_rsp(proxy: &super::UnixProxy, result: i32) {
+         Ok(flags) => match OFlag::from_bits(flags) {
+             Some(flags) => {
+-                if let Err(e) = fcntl(&proxy.fd, FcntlArg::F_SETFL(flags & !OFlag::O_NONBLOCK)) {
+-                    warn!("error switching to blocking: id={}, err={}", proxy.id, e);
++                if let Err(e) = fcntl(&proxy.fd, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK)) {
++                    warn!(
++                        "error switching to non-blocking: id={}, err={}",
++                        proxy.id, e
++                    );
+                 }
+             }
+             None => error!("invalid fd flags id={}", proxy.id),
+@@ -76,6 +85,86 @@ pub(crate) fn switch_to_connected(proxy: &mut super::UnixProxy) {
+     };
+ }
+ 
++/// The events to poll for: input while the guest has credit for it, and output
++/// while guest data waits for room in the host socket.
++fn interest(proxy: &super::UnixProxy) -> EventSet {
++    let mut events = EventSet::empty();
++    if proxy.status == ProxyStatus::Connected && !proxy.host_read_closed {
++        events |= EventSet::IN;
++    }
++    if !proxy.pending_tx.is_empty() {
++        events |= EventSet::OUT;
++    }
++    events
++}
++
++/// Writes as much of `buf` as the host socket takes, counting it as forwarded.
++fn send_host(proxy: &mut super::UnixProxy, buf: &[u8]) -> Result<usize, Errno> {
++    #[cfg(target_os = "macos")]
++    let flags = MsgFlags::empty();
++
++    #[cfg(target_os = "linux")]
++    let flags = MsgFlags::MSG_NOSIGNAL;
++
++    let mut sent = 0;
++    while sent < buf.len() {
++        match send(proxy.fd.as_raw_fd(), &buf[sent..], flags) {
++            Ok(n) => sent += n,
++            Err(Errno::EINTR) => continue,
++            Err(Errno::EAGAIN) => break,
++            Err(e) => return Err(e),
++        }
++    }
++    proxy.tx_cnt += Wrapping(sent as u32);
++    Ok(sent)
++}
++
++/// Returns credit to the guest once enough data was forwarded to the host.
++fn credit_update(proxy: &mut super::UnixProxy, update: &mut ProxyUpdate) {
++    if (proxy.tx_cnt - proxy.last_tx_cnt_sent).0 < proxy.peer_buf_alloc / 2 {
++        return;
++    }
++    debug!(
++        "sending credit update: id={}, tx_cnt={}, last_tx_cnt={}",
++        proxy.id, proxy.tx_cnt, proxy.last_tx_cnt_sent
++    );
++    proxy.last_tx_cnt_sent = proxy.tx_cnt;
++
++    let rx = MuxerRx::CreditUpdate {
++        local_port: proxy.local_port,
++        peer_port: proxy.peer_port,
++        fwd_cnt: proxy.tx_cnt.0,
++    };
++
++    push_packet(proxy.cid, rx, &proxy.rxq, &proxy.queue, &proxy.mem);
++    update.signal_queue = true;
++}
++
++/// Writes the guest data that was waiting for room in the host socket.
++fn flush_pending(proxy: &mut super::UnixProxy, update: &mut ProxyUpdate) {
++    let pending = std::mem::take(&mut proxy.pending_tx);
++    match send_host(proxy, &pending) {
++        Ok(sent) => proxy.pending_tx = pending[sent..].to_vec(),
++        Err(e) => debug!("flush_pending: send error: id={}, err={}", proxy.id, e),
++    }
++    credit_update(proxy, update);
++    if proxy.pending_tx.is_empty() && proxy.shutdown_write_pending {
++        proxy.shutdown_write_pending = false;
++        if let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Write) {
++            debug!("error sending shutdown(Write) to socket: {e}");
++        }
++    }
++    if proxy.pending_tx.is_empty() && proxy.close_after_flush {
++        proxy.close_after_flush = false;
++        let close = proxy.close();
++        update.polling = close.polling;
++        update.remove_proxy = close.remove_proxy;
++        update.signal_queue = true;
++        return;
++    }
++    update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), interest(proxy)));
++}
++
+ fn push_connect_rsp(proxy: &super::UnixProxy, result: i32) {
+     debug!(
+         "push_connect_rsp: id: {}, control_port: {}, result: {}",
+@@ -91,7 +180,10 @@ fn push_connect_rsp(proxy: &super::UnixProxy, result: i32) {
      push_packet(proxy.cid, rx, &proxy.rxq, &proxy.queue, &proxy.mem);
  }
  
@@ -412,7 +566,7 @@ index 00e62c86..63d26fac 100644
      if let Some(buf) = pkt.buf_mut() {
          let peer_credit = proxy.peer_avail_credit();
          let max_len = std::cmp::min(buf.len(), peer_credit);
-@@ -104,7 +110,7 @@ pub(crate) fn recv_to_pkt(proxy: &super::UnixProxy, pkt: &mut VsockPacket) -> Re
+@@ -104,7 +196,7 @@ pub(crate) fn recv_to_pkt(proxy: &super::UnixProxy, pkt: &mut VsockPacket) -> Re
          );
  
          if max_len == 0 {
@@ -421,7 +575,7 @@ index 00e62c86..63d26fac 100644
          }
  
          match recv(
-@@ -116,22 +122,17 @@ pub(crate) fn recv_to_pkt(proxy: &super::UnixProxy, pkt: &mut VsockPacket) -> Re
+@@ -116,22 +208,17 @@ pub(crate) fn recv_to_pkt(proxy: &super::UnixProxy, pkt: &mut VsockPacket) -> Re
                  debug!("recv cnt={cnt}");
                  if cnt > 0 {
                      debug!("recv rx_cnt={}", proxy.rx_cnt);
@@ -449,7 +603,77 @@ index 00e62c86..63d26fac 100644
      }
  }
  
-@@ -267,7 +268,10 @@ pub(crate) fn update_peer_credit(proxy: &mut super::UnixProxy, pkt: &VsockPacket
+@@ -207,52 +294,27 @@ pub(crate) fn confirm_connect(
+ pub(crate) fn sendmsg(proxy: &mut super::UnixProxy, pkt: &VsockPacket) -> ProxyUpdate {
+     let mut update = ProxyUpdate::default();
+ 
+-    let ret = if let Some(buf) = pkt.buf() {
+-        #[cfg(target_os = "macos")]
+-        let flags = MsgFlags::empty();
+-
+-        #[cfg(target_os = "linux")]
+-        let flags = MsgFlags::MSG_NOSIGNAL;
+-
+-        match send(proxy.fd.as_raw_fd(), buf, flags) {
+-            Ok(sent) => {
+-                if sent != buf.len() {
+-                    error!("couldn't set everything: buf={}, sent={}", buf.len(), sent);
+-                }
+-                proxy.tx_cnt += Wrapping(sent as u32);
+-                sent as i32
+-            }
+-            Err(err) => {
+-                #[cfg(target_os = "macos")]
+-                let errno = -linux_errno_raw(err as i32);
+-
+-                #[cfg(target_os = "linux")]
+-                let errno = -(err as i32);
+-                errno
+-            }
+-        }
+-    } else {
+-        -libc::EINVAL
++    let Some(buf) = pkt.buf() else {
++        debug!("sendmsg: pkt without buf");
++        return update;
+     };
+ 
+-    if ret > 0 && (proxy.tx_cnt - proxy.last_tx_cnt_sent).0 >= proxy.peer_buf_alloc / 2 {
+-        debug!(
+-            "sending credit update: id={}, tx_cnt={}, last_tx_cnt={}",
+-            proxy.id, proxy.tx_cnt, proxy.last_tx_cnt_sent
+-        );
+-        proxy.last_tx_cnt_sent = proxy.tx_cnt;
+-
+-        let rx = MuxerRx::CreditUpdate {
+-            local_port: pkt.dst_port(),
+-            peer_port: pkt.src_port(),
+-            fwd_cnt: proxy.tx_cnt.0,
+-        };
+-
+-        push_packet(proxy.cid, rx, &proxy.rxq, &proxy.queue, &proxy.mem);
+-        update.signal_queue = true;
++    // Keep the order: while older data waits, newer data waits behind it.
++    if !proxy.pending_tx.is_empty() {
++        proxy.pending_tx.extend_from_slice(buf);
++        return update;
+     }
+ 
+-    debug!("sendmsg ret={ret}");
++    match send_host(proxy, buf) {
++        Ok(sent) if sent < buf.len() => {
++            debug!("sendmsg: host socket full, id={} sent={sent}", proxy.id);
++            proxy.pending_tx.extend_from_slice(&buf[sent..]);
++            update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), interest(proxy)));
++        }
++        Ok(_) => {}
++        Err(e) => debug!("sendmsg: send error: id={}, err={}", proxy.id, e),
++    }
++    credit_update(proxy, &mut update);
+ 
+     update
+ }
+@@ -267,14 +329,17 @@ pub(crate) fn update_peer_credit(proxy: &mut super::UnixProxy, pkt: &VsockPacket
      proxy.peer_buf_alloc = pkt.buf_alloc();
      proxy.peer_fwd_cnt = Wrapping(pkt.fwd_cnt());
  
@@ -461,7 +685,15 @@ index 00e62c86..63d26fac 100644
          return ProxyUpdate::default();
      }
  
-@@ -316,16 +320,14 @@ pub(crate) fn do_shutdown(proxy: &mut super::UnixProxy, pkt: &VsockPacket) {
+     proxy.status = ProxyStatus::Connected;
+ 
+     ProxyUpdate {
+-        polling: Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::IN)),
++        polling: Some((proxy.id, proxy.fd.as_raw_fd(), interest(proxy))),
+         ..Default::default()
+     }
+ }
+@@ -316,16 +381,17 @@ pub(crate) fn do_shutdown(proxy: &mut super::UnixProxy, pkt: &VsockPacket) {
      let recv_off = pkt.flags() & super::uapi::VSOCK_FLAGS_SHUTDOWN_RCV != 0;
      let send_off = pkt.flags() & super::uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0;
  
@@ -478,7 +710,10 @@ index 00e62c86..63d26fac 100644
 +    // Shutdown each direction independently: on macOS, shutdown(SHUT_RDWR) on
 +    // a socket whose peer already shut down its write side returns ENOTCONN,
 +    // and the host never sees EOF until the proxy is reaped.
-+    if send_off && let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Write) {
++    // Data still waiting for the host goes out before the write side closes.
++    if send_off && !proxy.pending_tx.is_empty() {
++        proxy.shutdown_write_pending = true;
++    } else if send_off && let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Write) {
 +        debug!("error sending shutdown(Write) to socket: {e}");
 +    }
 +    if recv_off && let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Read) {
@@ -486,18 +721,32 @@ index 00e62c86..63d26fac 100644
      }
  }
  
-@@ -404,8 +406,8 @@ pub(crate) fn process_event(proxy: &mut super::UnixProxy, evset: EventSet) -> Pr
+@@ -404,9 +470,9 @@ pub(crate) fn process_event(proxy: &mut super::UnixProxy, evset: EventSet) -> Pr
                  update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
                  update.remove_proxy = ProxyRemoval::Deferred;
                  return update;
 -            } else if proxy.status == ProxyStatus::WaitingCreditUpdate {
 -                debug!("process_event: WaitingCreditUpdate");
+-                update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
 +            } else if proxy.host_read_closed || proxy.status == ProxyStatus::WaitingCreditUpdate {
 +                debug!("process_event: disabling read polling");
-                 update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
++                update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), interest(proxy)));
              }
          } else {
-@@ -477,6 +479,10 @@ pub(crate) fn process_acceptor_event(
+             debug!("EventSet::IN while not connected: {:?}", proxy.status);
+@@ -420,8 +486,10 @@ pub(crate) fn process_event(proxy: &mut super::UnixProxy, evset: EventSet) -> Pr
+             push_connect_rsp(proxy, 0);
+             update.signal_queue = true;
+             update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::IN));
++        } else if !proxy.pending_tx.is_empty() {
++            flush_pending(proxy, &mut update);
+         } else {
+-            error!("EventSet::OUT while not connecting");
++            debug!("EventSet::OUT with nothing to send: {:?}", proxy.status);
+         }
+     }
+ 
+@@ -477,6 +545,10 @@ pub(crate) fn process_acceptor_event(
              Ok(accept_fd) => {
                  // Safe because we've just obtained the FD from the `accept` call above.
                  let new_fd = unsafe { OwnedFd::from_raw_fd(accept_fd) };
@@ -624,11 +873,47 @@ index bb1f8e30..f8c7e029 100644
                  Ok(hvfgic) => IrqChipDevice::new(Box::new(hvfgic)),
                  Err(_) => IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone()))),
              };
+diff --git a/src/utils/src/macos/epoll.rs b/src/utils/src/macos/epoll.rs
+index cae27154..f1791768 100644
+--- a/src/utils/src/macos/epoll.rs
++++ b/src/utils/src/macos/epoll.rs
+@@ -261,16 +261,21 @@ impl Epoll {
+                         ));
+                     }
+                 }
+-                let _ = unsafe {
+-                    libc::kevent(
+-                        self.queue,
+-                        kevs.as_ptr() as *const libc::kevent,
+-                        kevs.len() as i32,
+-                        ptr::null_mut(),
+-                        0,
+-                        ptr::null(),
+-                    )
+-                };
++                // One call per filter: kevent() stops at the first change that fails,
++                // so deleting a READ filter that isn't registered would leave the
++                // WRITE filter in place, firing forever.
++                for kev in &kevs {
++                    let _ = unsafe {
++                        libc::kevent(
++                            self.queue,
++                            kev as *const Kevent as *const libc::kevent,
++                            1,
++                            ptr::null_mut(),
++                            0,
++                            ptr::null(),
++                        )
++                    };
++                }
+             }
+         }
+         Ok(())
 diff --git a/tests/test_cases/src/lib.rs b/tests/test_cases/src/lib.rs
-index d4c78ecc..e752f04f 100644
+index d4c78ecc..1c0b056b 100644
 --- a/tests/test_cases/src/lib.rs
 +++ b/tests/test_cases/src/lib.rs
-@@ -54,6 +54,15 @@ mod test_vsock_guest_connect_emfile;
+@@ -54,6 +54,20 @@ mod test_vsock_guest_connect_emfile;
  #[cfg(any(feature = "host", target_os = "linux"))]
  use test_vsock_guest_connect_emfile::TestVsockGuestConnectEmfile;
  
@@ -641,19 +926,26 @@ index d4c78ecc..e752f04f 100644
 +#[cfg(any(feature = "host", target_os = "linux"))]
 +use test_virtiofs_host_changes::TestVirtiofsHostChanges;
 +
++#[cfg(any(feature = "host", target_os = "linux"))]
++mod test_vsock_unix_slow_reader;
++#[cfg(any(feature = "host", target_os = "linux"))]
++use test_vsock_unix_slow_reader::TestVsockUnixSlowReader;
++
  mod test_tsi_tcp_guest_connect;
  use test_tsi_tcp_guest_connect::TestTsiTcpGuestConnect;
  
-@@ -196,6 +205,8 @@ pub fn test_cases() -> Vec<TestCase> {
+@@ -196,6 +210,10 @@ pub fn test_cases() -> Vec<TestCase> {
              "vsock-guest-connect-emfile",
              Box::new(TestVsockGuestConnectEmfile),
          ),
 +        #[cfg(any(feature = "host", target_os = "linux"))]
 +        TestCase::new("vsock-unix-half-close", Box::new(TestVsockUnixHalfClose)),
++        #[cfg(any(feature = "host", target_os = "linux"))]
++        TestCase::new("vsock-unix-slow-reader", Box::new(TestVsockUnixSlowReader)),
          TestCase::new(
              "tsi-tcp-guest-connect",
              Box::new(TestTsiTcpGuestConnect::new()),
-@@ -225,6 +236,8 @@ pub fn test_cases() -> Vec<TestCase> {
+@@ -225,6 +243,8 @@ pub fn test_cases() -> Vec<TestCase> {
          TestCase::new("virtiofs-misc", Box::new(TestVirtioFsMisc)),
          #[cfg(any(feature = "host", target_os = "linux"))]
          TestCase::new("virtiofs-fixed-owner", Box::new(TestVirtiofsFixedOwner)),
@@ -1118,6 +1410,237 @@ index 00000000..d74e2e63
 +                status,
 +                [1],
 +                "host did not receive the complete replies and EOF"
++            );
++            println!("OK");
++        }
++    }
++}
+diff --git a/tests/test_cases/src/test_vsock_unix_slow_reader.rs b/tests/test_cases/src/test_vsock_unix_slow_reader.rs
+new file mode 100644
+index 00000000..1eb46799
+--- /dev/null
++++ b/tests/test_cases/src/test_vsock_unix_slow_reader.rs
+@@ -0,0 +1,225 @@
++#![cfg(any(feature = "host", target_os = "linux"))]
++
++//! A host peer that stops reading a unix socket proxy must not stall the other
++//! vsock connections. The guest streams `BULK_LEN` bytes on one connection while
++//! the host leaves it unread, and the host expects an answer on a second
++//! connection meanwhile; then it reads the whole stream and checks it.
++//! Writing to the host socket used to block the thread that serves every vsock
++//! connection (and the other devices), so the second connection never got its
++//! answer.
++
++use macros::{guest, host};
++use std::time::Duration;
++
++pub struct TestVsockUnixSlowReader;
++
++/// The guest connects out on this port once its listener is bound, and the
++/// host reports the outcome back on the same connection.
++const CONTROL_PORT: u32 = 1234;
++/// Registered with `listen=true`: the host connects, the guest accepts.
++const ACCEPT_PORT: u32 = 1235;
++
++const BULK_LEN: usize = 16 * 1024 * 1024;
++const IO_TIMEOUT: Duration = Duration::from_secs(5);
++
++fn byte_at(index: usize) -> u8 {
++    (index % 251) as u8
++}
++
++#[host]
++mod host {
++    use super::*;
++    #[cfg(feature = "dynamic-linking")]
++    use krun::DeviceManager;
++
++    use anyhow::{Context, ensure};
++    use std::io::{Read, Write};
++    use std::os::unix::net::{UnixListener, UnixStream};
++    use std::path::Path;
++    use std::thread;
++
++    use crate::common::{build_init_config, init_krun, setup_standard_devices};
++    use crate::{ShouldRun, Test, TestSetup};
++
++    #[cfg(feature = "dynamic-linking")]
++    fn require_symbols() -> Result<(), libloading::Error> {
++        crate::common::require_vm_symbols()?;
++        krun::require(
++            None,
++            &[
++                krun::Symbol::KrunVsockDeviceNew,
++                krun::Symbol::KrunVsockDeviceDestroy,
++                krun::Symbol::KrunVsockDeviceAddUnixPort,
++            ],
++        )
++    }
++
++    fn run_client(accept_sock: &Path) -> anyhow::Result<()> {
++        let mut bulk = UnixStream::connect(accept_sock).context("connect bulk")?;
++        // Leave the bulk stream unread long enough for its socket buffer to fill.
++        thread::sleep(Duration::from_secs(1));
++
++        let mut ping = UnixStream::connect(accept_sock).context("connect ping")?;
++        ping.set_read_timeout(Some(IO_TIMEOUT))?;
++        ping.write_all(b"p").context("send ping")?;
++        let mut pong = [0; 4];
++        ping.read_exact(&mut pong)
++            .context("no answer on a second connection while the first is unread")?;
++        ensure!(&pong == b"pong", "wrong answer: {pong:?}");
++
++        bulk.set_read_timeout(Some(IO_TIMEOUT))?;
++        let mut data = Vec::new();
++        bulk.read_to_end(&mut data).context("read bulk stream")?;
++        ensure!(data.len() == BULK_LEN, "bulk stream has {} bytes", data.len());
++        ensure!(
++            data.iter().enumerate().all(|(i, b)| *b == byte_at(i)),
++            "bulk stream is corrupted"
++        );
++        Ok(())
++    }
++
++    fn run(control_listener: UnixListener, accept_sock: &Path) {
++        // Returns once the guest has bound its listener.
++        let (mut control, _) = control_listener.accept().unwrap();
++
++        let status = match run_client(accept_sock) {
++            Ok(()) => 1,
++            Err(error) => {
++                eprintln!("slow reader client failed: {error:#}");
++                0
++            }
++        };
++        control.write_all(&[status]).unwrap();
++        // Keep the connection open until the guest has read the status.
++        let _ = control.read(&mut [0]);
++    }
++
++    impl Test for TestVsockUnixSlowReader {
++        fn should_run(&self) -> ShouldRun {
++            #[cfg(feature = "dynamic-linking")]
++            if require_symbols().is_err() {
++                return ShouldRun::No("feature not enabled in this libkrun build");
++            }
++            ShouldRun::Yes
++        }
++
++        fn timeout_secs(&self) -> u64 {
++            30
++        }
++
++        fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
++            init_krun()?;
++            #[cfg(feature = "dynamic-linking")]
++            require_symbols().unwrap();
++
++            let control_sock = test_setup.tmp_dir.join("control.sock");
++            let accept_sock = test_setup.tmp_dir.join("accept.sock");
++
++            let control_listener = UnixListener::bind(&control_sock)?;
++            let accept_sock_clone = accept_sock.clone();
++            thread::spawn(move || run(control_listener, &accept_sock_clone));
++
++            let init_config = build_init_config(&test_setup.test_case, &[]);
++            let stdin = std::io::stdin();
++            let stdout = std::io::stdout();
++            let stderr = std::io::stderr();
++            let (mut devices, payload) =
++                setup_standard_devices(&test_setup, &init_config, &stdin, &stdout, &stderr)?;
++            let mut vsock = krun::VsockDevice::new(3, krun::TsiFlags::empty())
++                .map_err(|e| anyhow::anyhow!("VsockDevice: {e:?}"))?;
++            vsock.add_unix_port(CONTROL_PORT, control_sock.to_str().unwrap(), false);
++            vsock.add_unix_port(ACCEPT_PORT, accept_sock.to_str().unwrap(), true);
++            devices.add(vsock);
++
++            let vmm = krun::VmmBuilder::new()
++                .vcpus(1)
++                .map_err(|e| anyhow::anyhow!("vcpus: {e:?}"))?
++                .ram_mib(512)
++                .map_err(|e| anyhow::anyhow!("ram_mib: {e:?}"))?
++                .payload(payload)
++                .devices(devices)
++                .build()
++                .map_err(|e| anyhow::anyhow!("build: {e:?}"))?;
++
++            vmm.run();
++            unreachable!()
++        }
++    }
++}
++
++#[guest]
++mod guest {
++    use super::*;
++    use crate::Test;
++    use nix::libc::VMADDR_CID_HOST;
++    use nix::sys::socket::{
++        AddressFamily, Backlog, SockFlag, SockType, VsockAddr, accept, bind, connect, listen,
++        socket,
++    };
++    use std::io::{Read, Write};
++    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
++    use std::os::unix::net::UnixStream;
++    use std::thread;
++
++    fn vsock_connect(port: u32) -> UnixStream {
++        let sock = socket(
++            AddressFamily::Vsock,
++            SockType::Stream,
++            SockFlag::empty(),
++            None,
++        )
++        .unwrap();
++        connect(sock.as_raw_fd(), &VsockAddr::new(VMADDR_CID_HOST, port)).unwrap();
++        UnixStream::from(sock)
++    }
++
++    fn accept_stream(listener: &OwnedFd) -> UnixStream {
++        let fd = accept(listener.as_raw_fd()).unwrap();
++        // Safe because we've just obtained the FD from the `accept` call above.
++        UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) })
++    }
++
++    impl Test for TestVsockUnixSlowReader {
++        fn in_guest(self: Box<Self>) {
++            let listener = socket(
++                AddressFamily::Vsock,
++                SockType::Stream,
++                SockFlag::empty(),
++                None,
++            )
++            .unwrap();
++            bind(
++                listener.as_raw_fd(),
++                &VsockAddr::new(nix::libc::VMADDR_CID_ANY, ACCEPT_PORT),
++            )
++            .unwrap();
++            listen(&listener, Backlog::new(4).unwrap()).unwrap();
++
++            let mut control = vsock_connect(CONTROL_PORT);
++
++            let mut bulk = accept_stream(&listener);
++            let writer = thread::spawn(move || {
++                let data: Vec<u8> = (0..BULK_LEN).map(byte_at).collect();
++                bulk.write_all(&data).unwrap();
++            });
++
++            let mut ping = accept_stream(&listener);
++            ping.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
++            let mut byte = [0];
++            ping.read_exact(&mut byte).unwrap();
++            ping.write_all(b"pong").unwrap();
++
++            writer.join().unwrap();
++
++            let mut status = [0];
++            control.read_exact(&mut status).unwrap();
++            control.write_all(&[1]).unwrap();
++            assert_eq!(
++                status,
++                [1],
++                "host got no answer on a second connection, or a corrupted stream"
 +            );
 +            println!("OK");
 +        }
