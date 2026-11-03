@@ -107,6 +107,8 @@ fi
 # deixa os artefatos no layout usado pelo CLI (~/.nanoc/assets + rootfs.sqfs)
 mkdir -p "$STATE/assets"
 cp -f "$ASSETS/Image" "$ASSETS/initramfs.cpio.gz" "$ASSETS/modloop-virt" "$STATE/assets/" 2>/dev/null || true
+# o marcador diz ao daemon que este modloop traz o nanoc_notify (cache de 10 s em /Users)
+[ -f "$ASSETS/.modloop-notify" ] && cp -f "$ASSETS/.modloop-notify" "$STATE/assets/"
 cp -f "$STATE/rootfs.sqfs" "$STATE/rootfs.sqfs" 2>/dev/null || true
 
 echo "bootstrap concluído"

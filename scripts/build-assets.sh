@@ -14,5 +14,6 @@ rm -rf dist && mkdir -p dist/assets
 ./scripts/bootstrap.sh
 
 DIST="dist/nanoc-assets-${VERSION}.tar.gz"
-tar -czf "$DIST" -C dist assets/Image assets/initramfs.cpio.gz assets/modloop-virt rootfs.erofs rootfs.sqfs
+EXTRA=""; [ -f dist/assets/.modloop-notify ] && EXTRA=assets/.modloop-notify
+tar -czf "$DIST" -C dist assets/Image assets/initramfs.cpio.gz assets/modloop-virt $EXTRA rootfs.erofs rootfs.sqfs
 ls -lh "$DIST"
