@@ -1,7 +1,8 @@
 //go:build linux
 
-// nanoc-agent: roda no guest. Expõe o docker.sock na porta vsock 2375 e um pequeno
-// canal de controle na 2376 (info, run/exec e ciclo de vida opcional do k3s).
+// nanoc-agent: roda no guest. Expõe o docker.sock na porta vsock 2375, um pequeno
+// canal de controle na 2376 (info, run/exec e ciclo de vida opcional do k3s) e um
+// repasse para containers na 2377 (https://<container>.nanoc.local no Mac).
 // Só por vsock: em TCP, qualquer processo do Mac ou VM da rede NAT teria root no
 // guest. TCP só com nanoc.tcp=1 no cmdline (NANOC_VSOCK=0 no host, para depuração).
 package main
@@ -26,6 +27,7 @@ import (
 const (
 	dockerPort  = 2375
 	controlPort = 2376
+	relayPort   = 2377
 	dockerSock  = "/var/run/docker.sock"
 
 	k3sBin        = "/data/k3s"
@@ -61,6 +63,7 @@ func main() {
 		go serveTCP(dockerPort, proxy)
 	}
 	go serveVsock(controlPort, handleControl)
+	go serveVsock(relayPort, proxyContainer)
 	serveVsock(dockerPort, proxyDocker)
 }
 

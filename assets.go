@@ -127,6 +127,7 @@ uso:
   nanoc k8s <ação>         enable | disable | status | reset
   nanoc events [n]         últimos eventos do daemon (paradas, sinais, mortes)
   nanoc mcp                servidor MCP (stdio) para depurar o nanoc
+  nanoc trust              confia (Keychain) na CA de https://<container>.nanoc.local
   nanoc --version          versão
 
   export DOCKER_HOST=unix://$HOME/.nanoc/docker.sock`)

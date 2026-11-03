@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -106,5 +107,28 @@ func TestRelayTerminaQuandoClienteFecha(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("relay não terminou depois que o cliente fechou")
+	}
+}
+
+func TestReadAddr(t *testing.T) {
+	for in, ok := range map[string]bool{
+		"172.17.0.2:80\nresto": true,
+		"10.0.0.5:5432\n":      true,
+		"8.8.8.8:53\n":         false,
+		"127.0.0.1:22\n":       false,
+		"172.17.0.2:0\n":       false,
+		"172.17.0.2:80":        false,
+	} {
+		r := strings.NewReader(in)
+		got, err := readAddr(r)
+		if (err == nil) != ok {
+			t.Errorf("%q: %q %v", in, got, err)
+		}
+		if ok {
+			rest, _ := io.ReadAll(r)
+			if want := in[strings.IndexByte(in, '\n')+1:]; string(rest) != want {
+				t.Errorf("%q: sobrou %q, quero %q", in, rest, want)
+			}
+		}
 	}
 }

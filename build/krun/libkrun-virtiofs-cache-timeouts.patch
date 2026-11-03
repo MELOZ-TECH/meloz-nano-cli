@@ -1,0 +1,501 @@
+From c381ada6971506d87a08722354015a86c418e2e1 Mon Sep 17 00:00:00 2001
+From: Romeu Melur <romeumello@icloud.com>
+Date: Tue, 3 Nov 2026 03:10:10 -0300
+Subject: [PATCH] virtio/fs: allow configuring lookup and attribute cache
+ timeouts
+
+Passthrough filesystems let the guest cache entries and attributes for
+5 s. When the host changes a shared directory, the guest keeps the old
+size of a file that grew and reads truncated contents until the timeout
+expires; editors that save by rename leave it reading the replaced file.
+
+Expose FsDevice::set_cache_timeouts() in the Rust and C APIs to set the
+entry and attribute timeouts in milliseconds, keeping 5000 ms as the
+default. LinuxSimplified still never caches attributes; the requested
+attribute timeout is kept and applied when switching to LinuxComplete
+or LinuxSimplifiedFixedOwner.
+NullFs devices reject the call. Update documentation, regenerate
+bindings, and add unit tests and an end-to-end regression for a host
+growing, creating and replacing files while the guest uses them.
+
+Assisted-by: Claude Code: claude-opus-5.5
+Signed-off-by: Romeu Melur <romeumello@icloud.com>
+---
+ .../libkrun-via-cdylib-weak/ffier-krun.json   |  33 +++
+ docs/vm-lifecycle.md                          |   2 +
+ include/libkrun.h                             |  12 ++
+ src/devices/src/virtio/fs/device.rs           |  78 ++++++-
+ src/libkrun/src/api/device_builders.rs        |  22 ++
+ tests/test_cases/src/lib.rs                   |   7 +
+ .../src/test_virtiofs_host_changes.rs         | 197 ++++++++++++++++++
+ 7 files changed, 350 insertions(+), 1 deletion(-)
+ create mode 100644 tests/test_cases/src/test_virtiofs_host_changes.rs
+
+diff --git a/bindings/libkrun-via-cdylib-weak/ffier-krun.json b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
+index 8b64f3c5..b094b0b1 100644
+--- a/bindings/libkrun-via-cdylib-weak/ffier-krun.json
++++ b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
+@@ -767,6 +767,39 @@
+             "c_convention": "out_param"
+           },
+           "ffi_name": "krun_fs_device_set_cache_policy"
++        },
++        {
++          "name": "set_cache_timeouts",
++          "doc": [
++            " Set how long the guest may cache lookups and attributes, before attaching this device.",
++            "",
++            " Both default to 5000 ms. Files changed outside the guest can look stale until the",
++            " timeouts expire: a file that grew on the host is read with its old size. Use 0 for",
++            " directories the host modifies while the guest uses them, at the cost of one more",
++            " request to the server per lookup or attribute read. With `LinuxSimplified`",
++            " attributes are never cached, and `attr_timeout_ms` applies again after switching to",
++            " another mode. A NullFs device has no host-backed entries and returns `InvalidParam`."
++          ],
++          "receiver": "mut",
++          "params": [
++            {
++              "name": "entry_timeout_ms",
++              "param_kind": "regular",
++              "type": "u32"
++            },
++            {
++              "name": "attr_timeout_ms",
++              "param_kind": "regular",
++              "type": "u32"
++            }
++          ],
++          "ret": {
++            "return_kind": "result",
++            "ok": null,
++            "err_type": "VmmError",
++            "c_convention": "out_param"
++          },
++          "ffi_name": "krun_fs_device_set_cache_timeouts"
+         }
+       ],
+       "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"
+diff --git a/docs/vm-lifecycle.md b/docs/vm-lifecycle.md
+index bca0370f..8a6e016f 100644
+--- a/docs/vm-lifecycle.md
++++ b/docs/vm-lifecycle.md
+@@ -43,6 +43,8 @@ Create an `MmioDeviceManager` with `MmioDeviceManager::new()` (C API: `krun_mmio
+   Call `set_cache_policy()` before attaching it to select `CachePolicy::Auto` (the default),
+   `Never` or `Always`. Use `Never` for files modified outside the guest; reserve `Always`
+   for directories accessed exclusively through this filesystem.
++  `set_cache_timeouts()` sets how long lookups and attributes are cached (5000 ms by
++  default); use 0 for directories the host modifies while the guest uses them.
+ - **Network**:
+   - **TSI (Transparent Socket Impersonation)**: Built into `VsockDevice` with `TsiFlags::HIJACK_INET` and port forwarding.
+   - **Virtio-net**: `NetDevice` connected via Unix stream or datagram socket (e.g. to `passt` or `gvproxy`).
+diff --git a/include/libkrun.h b/include/libkrun.h
+index 0a1cc112..ad02600e 100644
+--- a/include/libkrun.h
++++ b/include/libkrun.h
+@@ -303,6 +303,18 @@ typedef KrunResult (*krun_fs_device_set_fixed_owner_fn)(KrunFsDevice handle, uin
+  */
+ KrunResult krun_fs_device_set_cache_policy(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
+ typedef KrunResult (*krun_fs_device_set_cache_policy_fn)(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
++/**
++ * Set how long the guest may cache lookups and attributes, before attaching this device.
++ *
++ * Both default to 5000 ms. Files changed outside the guest can look stale until the
++ * timeouts expire: a file that grew on the host is read with its old size. Use 0 for
++ * directories the host modifies while the guest uses them, at the cost of one more
++ * request to the server per lookup or attribute read. With `LinuxSimplified`
++ * attributes are never cached, and `attr_timeout_ms` applies again after switching to
++ * another mode. A NullFs device has no host-backed entries and returns `InvalidParam`.
++ */
++KrunResult krun_fs_device_set_cache_timeouts(KrunFsDevice handle, uint32_t entry_timeout_ms, uint32_t attr_timeout_ms, KrunError* err_out);
++typedef KrunResult (*krun_fs_device_set_cache_timeouts_fn)(KrunFsDevice handle, uint32_t entry_timeout_ms, uint32_t attr_timeout_ms, KrunError* err_out);
+ void krun_fs_device_destroy(KrunFsDevice handle);
+ typedef void (*krun_fs_device_destroy_fn)(KrunFsDevice handle);
+ 
+diff --git a/src/devices/src/virtio/fs/device.rs b/src/devices/src/virtio/fs/device.rs
+index 2ad76395..c1dc693e 100644
+--- a/src/devices/src/virtio/fs/device.rs
++++ b/src/devices/src/virtio/fs/device.rs
+@@ -25,6 +25,9 @@ use super::worker::FsWorker;
+ use super::{CachePolicy, PermissionSemantics, defs, defs::uapi};
+ use crate::virtio::InterruptTransport;
+ 
++// The passthrough backends' default attribute timeout.
++const DEFAULT_ATTR_TIMEOUT: Duration = Duration::from_secs(5);
++
+ #[derive(Copy, Clone)]
+ #[repr(C, packed)]
+ struct VirtioFsConfig {
+@@ -49,6 +52,8 @@ pub struct Fs {
+     device_state: DeviceState,
+     config: VirtioFsConfig,
+     allow_idmap: bool,
++    // Attribute timeout restored when switching back to LinuxComplete.
++    cached_attr_timeout: Duration,
+     shm_region: Option<VirtioShmRegion>,
+     passthrough_cfg: Option<passthrough::Config>,
+     read_only: bool,
+@@ -89,6 +94,7 @@ impl Fs {
+             device_state: DeviceState::Inactive,
+             config,
+             allow_idmap,
++            cached_attr_timeout: DEFAULT_ATTR_TIMEOUT,
+             shm_region: None,
+             passthrough_cfg: fs_cfg,
+             read_only,
+@@ -131,7 +137,7 @@ impl Fs {
+         cfg.attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
+             Duration::ZERO
+         } else {
+-            Duration::from_secs(5)
++            self.cached_attr_timeout
+         };
+         cfg.xattr = complete;
+         #[cfg(target_os = "macos")]
+@@ -178,6 +184,19 @@ impl Fs {
+         true
+     }
+ 
++    pub fn set_cache_timeouts(&mut self, entry_timeout: Duration, attr_timeout: Duration) -> bool {
++        let Some(cfg) = self.passthrough_cfg.as_mut() else {
++            return false;
++        };
++        cfg.entry_timeout = entry_timeout;
++        self.cached_attr_timeout = attr_timeout;
++        // Requester ownership is context-dependent, so attributes stay uncached.
++        if !matches!(cfg.semantics, PermissionSemantics::LinuxSimplified) {
++            cfg.attr_timeout = attr_timeout;
++        }
++        true
++    }
++
+     pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
+         static FS_UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
+ 
+@@ -462,6 +481,63 @@ mod tests {
+         }
+     }
+ 
++    #[test]
++    fn cache_timeouts_apply_and_survive_permission_changes() {
++        let mut fs = filesystem(Some("/".to_owned()));
++        let entry_timeout = Duration::from_millis(250);
++        let attr_timeout = Duration::ZERO;
++        assert!(fs.set_cache_timeouts(entry_timeout, attr_timeout));
++        let cfg = fs.passthrough_cfg.as_ref().unwrap();
++        assert_eq!(cfg.entry_timeout, entry_timeout);
++        assert_eq!(cfg.attr_timeout, attr_timeout);
++        assert_eq!(cfg.cache_policy, CachePolicy::Auto);
++
++        assert!(fs.set_cache_policy(CachePolicy::Never));
++        assert!(fs.set_permission_semantics(PermissionSemantics::LinuxComplete));
++        let cfg = fs.passthrough_cfg.as_ref().unwrap();
++        assert_eq!(cfg.entry_timeout, entry_timeout);
++        assert_eq!(cfg.attr_timeout, attr_timeout);
++    }
++
++    #[test]
++    #[cfg(not(target_os = "linux"))]
++    fn simplified_semantics_keep_attributes_uncached() {
++        let mut fs = filesystem(Some("/".to_owned()));
++        assert!(fs.set_permission_semantics(PermissionSemantics::LinuxSimplified));
++        let attr_timeout = Duration::from_millis(123);
++        assert!(fs.set_cache_timeouts(Duration::from_secs(1), attr_timeout));
++        assert_eq!(
++            fs.passthrough_cfg.as_ref().unwrap().attr_timeout,
++            Duration::ZERO
++        );
++
++        assert!(fs.set_permission_semantics(PermissionSemantics::LinuxComplete));
++        assert_eq!(
++            fs.passthrough_cfg.as_ref().unwrap().attr_timeout,
++            attr_timeout
++        );
++    }
++
++    #[test]
++    #[cfg(target_os = "macos")]
++    fn fixed_owner_semantics_use_the_cache_timeouts() {
++        let mut fs = filesystem(Some("/".to_owned()));
++        let attr_timeout = Duration::from_millis(123);
++        assert!(fs.set_cache_timeouts(Duration::from_secs(1), attr_timeout));
++        assert!(fs.set_permission_semantics(PermissionSemantics::LinuxSimplifiedFixedOwner));
++        assert_eq!(
++            fs.passthrough_cfg.as_ref().unwrap().attr_timeout,
++            attr_timeout
++        );
++    }
++
++    #[test]
++    fn null_filesystems_reject_cache_timeouts() {
++        let mut fs = filesystem(None);
++        assert!(!fs.set_cache_timeouts(Duration::ZERO, Duration::ZERO));
++        assert!(fs.passthrough_cfg.is_none());
++    }
++
+     #[test]
+     fn null_filesystems_reject_cache_policy_changes() {
+         let mut fs = filesystem(None);
+diff --git a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
+index 6b050fd4..21d4e353 100644
+--- a/src/libkrun/src/api/device_builders.rs
++++ b/src/libkrun/src/api/device_builders.rs
+@@ -730,6 +730,28 @@ impl<'a> FsDevice<'a> {
+         }
+         Ok(())
+     }
++
++    /// Set how long the guest may cache lookups and attributes, before attaching this device.
++    ///
++    /// Both default to 5000 ms. Files changed outside the guest can look stale until the
++    /// timeouts expire: a file that grew on the host is read with its old size. Use 0 for
++    /// directories the host modifies while the guest uses them, at the cost of one more
++    /// request to the server per lookup or attribute read. With `LinuxSimplified`
++    /// attributes are never cached, and `attr_timeout_ms` applies again after switching to
++    /// another mode. A NullFs device has no host-backed entries and returns `InvalidParam`.
++    pub fn set_cache_timeouts(
++        &mut self,
++        entry_timeout_ms: u32,
++        attr_timeout_ms: u32,
++    ) -> Result<(), VmmError> {
++        if !self.inner.lock().unwrap().set_cache_timeouts(
++            std::time::Duration::from_millis(entry_timeout_ms.into()),
++            std::time::Duration::from_millis(attr_timeout_ms.into()),
++        ) {
++            return Err(VmmError::InvalidParam());
++        }
++        Ok(())
++    }
+ }
+ 
+ #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+diff --git a/tests/test_cases/src/lib.rs b/tests/test_cases/src/lib.rs
+index d4c78ecc..58ad156b 100644
+--- a/tests/test_cases/src/lib.rs
++++ b/tests/test_cases/src/lib.rs
+@@ -54,6 +54,11 @@ mod test_vsock_guest_connect_emfile;
+ #[cfg(any(feature = "host", target_os = "linux"))]
+ use test_vsock_guest_connect_emfile::TestVsockGuestConnectEmfile;
+ 
++#[cfg(any(feature = "host", target_os = "linux"))]
++mod test_virtiofs_host_changes;
++#[cfg(any(feature = "host", target_os = "linux"))]
++use test_virtiofs_host_changes::TestVirtiofsHostChanges;
++
+ mod test_tsi_tcp_guest_connect;
+ use test_tsi_tcp_guest_connect::TestTsiTcpGuestConnect;
+ 
+@@ -225,6 +230,8 @@ pub fn test_cases() -> Vec<TestCase> {
+         TestCase::new("virtiofs-misc", Box::new(TestVirtioFsMisc)),
+         #[cfg(any(feature = "host", target_os = "linux"))]
+         TestCase::new("virtiofs-fixed-owner", Box::new(TestVirtiofsFixedOwner)),
++        #[cfg(any(feature = "host", target_os = "linux"))]
++        TestCase::new("virtiofs-host-changes", Box::new(TestVirtiofsHostChanges)),
+         #[cfg(all(target_arch = "x86_64", target_os = "linux"))]
+         TestCase::new("virtio-pci", Box::new(TestVirtioPci)),
+         #[cfg(target_os = "linux")]
+diff --git a/tests/test_cases/src/test_virtiofs_host_changes.rs b/tests/test_cases/src/test_virtiofs_host_changes.rs
+new file mode 100644
+index 00000000..5cba5b91
+--- /dev/null
++++ b/tests/test_cases/src/test_virtiofs_host_changes.rs
+@@ -0,0 +1,197 @@
++#![cfg(any(feature = "host", target_os = "linux"))]
++
++//! A virtiofs share with `set_cache_timeouts(0, 0)` must show changes made on
++//! the host right away: a file that grew is read with its new size, a new file
++//! appears and a file replaced by rename (as editors save) shows the new
++//! contents. With the default 5 s timeouts the guest read the old size and got
++//! truncated contents.
++
++use macros::{guest, host};
++
++pub struct TestVirtiofsHostChanges;
++
++/// The guest connects out on this port to synchronize with the host.
++const CONTROL_PORT: u32 = 1234;
++const TAG: &str = "shared";
++
++const OLD: &str = "abc";
++const NEW: &str = "abcdefghijklmnop: grown on the host";
++const CREATED: &str = "created on the host";
++const REPLACED: &str = "replaced by rename on the host";
++
++#[host]
++mod host {
++    use super::*;
++    #[cfg(feature = "dynamic-linking")]
++    use krun::DeviceManager;
++
++    use std::fs;
++    use std::io::{Read, Write};
++    use std::os::unix::net::UnixListener;
++    use std::path::Path;
++    use std::thread;
++
++    use crate::common::{build_init_config, init_krun, setup_standard_devices};
++    use crate::{ShouldRun, Test, TestSetup};
++
++    #[cfg(feature = "dynamic-linking")]
++    fn require_symbols() -> Result<(), libloading::Error> {
++        crate::common::require_vm_symbols()?;
++        krun::require(
++            None,
++            &[
++                krun::Symbol::KrunFsDeviceNew,
++                krun::Symbol::KrunFsDeviceSetCacheTimeouts,
++                krun::Symbol::KrunVsockDeviceNew,
++                krun::Symbol::KrunVsockDeviceDestroy,
++                krun::Symbol::KrunVsockDeviceAddUnixPort,
++            ],
++        )
++    }
++
++    fn change_files(dir: &Path) {
++        fs::write(dir.join("grow.txt"), NEW).unwrap();
++        fs::write(dir.join("new.txt"), CREATED).unwrap();
++        fs::write(dir.join("replace.tmp"), REPLACED).unwrap();
++        fs::rename(dir.join("replace.tmp"), dir.join("replace.txt")).unwrap();
++    }
++
++    fn run(listener: UnixListener, dir: &Path) {
++        let (mut control, _) = listener.accept().unwrap();
++        // The guest has read the original files.
++        control.read_exact(&mut [0]).unwrap();
++        change_files(dir);
++        control.write_all(&[1]).unwrap();
++        // Keep the connection open until the guest is done.
++        let _ = control.read(&mut [0]);
++    }
++
++    impl Test for TestVirtiofsHostChanges {
++        fn should_run(&self) -> ShouldRun {
++            #[cfg(feature = "dynamic-linking")]
++            if require_symbols().is_err() {
++                return ShouldRun::No("feature not enabled in this libkrun build");
++            }
++            ShouldRun::Yes
++        }
++
++        fn timeout_secs(&self) -> u64 {
++            30
++        }
++
++        fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
++            init_krun()?;
++            #[cfg(feature = "dynamic-linking")]
++            require_symbols().unwrap();
++
++            let shared = test_setup.tmp_dir.join("shared");
++            fs::create_dir(&shared)?;
++            fs::write(shared.join("grow.txt"), OLD)?;
++            fs::write(shared.join("replace.txt"), OLD)?;
++
++            let control_sock = test_setup.tmp_dir.join("control.sock");
++            let listener = UnixListener::bind(&control_sock)?;
++            let shared_clone = shared.clone();
++            thread::spawn(move || run(listener, &shared_clone));
++
++            let init_config = build_init_config(&test_setup.test_case, &[]);
++            let stdin = std::io::stdin();
++            let stdout = std::io::stdout();
++            let stderr = std::io::stderr();
++            let (mut devices, payload) =
++                setup_standard_devices(&test_setup, &init_config, &stdin, &stdout, &stderr)?;
++
++            let mut fs_dev = krun::FsDevice::new(TAG, shared.to_str().unwrap())
++                .map_err(|e| anyhow::anyhow!("FsDevice::new: {e:?}"))?;
++            fs_dev
++                .set_cache_timeouts(0, 0)
++                .map_err(|e| anyhow::anyhow!("set_cache_timeouts: {e:?}"))?;
++            devices.add(fs_dev);
++
++            let mut vsock = krun::VsockDevice::new(3, krun::TsiFlags::empty())
++                .map_err(|e| anyhow::anyhow!("VsockDevice: {e:?}"))?;
++            vsock.add_unix_port(CONTROL_PORT, control_sock.to_str().unwrap(), false);
++            devices.add(vsock);
++
++            let vmm = krun::VmmBuilder::new()
++                .vcpus(1)
++                .map_err(|e| anyhow::anyhow!("vcpus: {e:?}"))?
++                .ram_mib(512)
++                .map_err(|e| anyhow::anyhow!("ram_mib: {e:?}"))?
++                .payload(payload)
++                .devices(devices)
++                .build()
++                .map_err(|e| anyhow::anyhow!("build: {e:?}"))?;
++
++            vmm.run();
++            unreachable!()
++        }
++    }
++}
++
++#[guest]
++mod guest {
++    use super::*;
++    use crate::Test;
++    use nix::libc::{self, VMADDR_CID_HOST};
++    use nix::sys::socket::{AddressFamily, SockFlag, SockType, VsockAddr, connect, socket};
++    use std::ffi::CString;
++    use std::fs;
++    use std::io::{Read, Write};
++    use std::os::fd::AsRawFd;
++    use std::os::unix::net::UnixStream;
++
++    fn mount_share() {
++        fs::create_dir_all("/mnt/shared").unwrap();
++        let source = CString::new(TAG).unwrap();
++        let target = CString::new("/mnt/shared").unwrap();
++        let fstype = CString::new("virtiofs").unwrap();
++        let ret = unsafe {
++            libc::mount(
++                source.as_ptr(),
++                target.as_ptr(),
++                fstype.as_ptr(),
++                0,
++                std::ptr::null(),
++            )
++        };
++        assert_eq!(ret, 0, "mount: {}", std::io::Error::last_os_error());
++    }
++
++    fn read(name: &str) -> String {
++        fs::read_to_string(format!("/mnt/shared/{name}")).unwrap()
++    }
++
++    impl Test for TestVirtiofsHostChanges {
++        fn in_guest(self: Box<Self>) {
++            mount_share();
++
++            // Cache the entries and attributes of the original files.
++            assert_eq!(read("grow.txt"), OLD);
++            assert_eq!(read("replace.txt"), OLD);
++            assert!(fs::metadata("/mnt/shared/new.txt").is_err());
++
++            let sock = socket(
++                AddressFamily::Vsock,
++                SockType::Stream,
++                SockFlag::empty(),
++                None,
++            )
++            .unwrap();
++            connect(
++                sock.as_raw_fd(),
++                &VsockAddr::new(VMADDR_CID_HOST, CONTROL_PORT),
++            )
++            .unwrap();
++            let mut control = UnixStream::from(sock);
++            control.write_all(&[1]).unwrap();
++            control.read_exact(&mut [0]).unwrap();
++
++            assert_eq!(read("grow.txt"), NEW, "grown file read with a stale size");
++            assert_eq!(read("new.txt"), CREATED, "new file not visible");
++            assert_eq!(read("replace.txt"), REPLACED, "replaced file still old");
++            control.write_all(&[1]).unwrap();
++            println!("OK");
++        }
++    }
++}
+-- 
+2.38.1
+

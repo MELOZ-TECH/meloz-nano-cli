@@ -30,6 +30,34 @@ jobs:
       # Integração NÃO roda no CI: runners do GitHub são VMs e o macOS não
       # permite virtualização aninhada. Use `make itest` num Mac real.
 
+  krun:
+    # backend libkrun: o libkrun com o patch do nanoc e o nanoc com -tags krun,
+    # empacotado como no release (bin/ e lib/)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            libkrun/target
+          key: libkrun-${{ hashFiles('build/krun/build-libkrun.sh', 'build/krun/libkrun-nanoc-*.patch') }}
+      - name: libkrun
+        run: build/krun/build-libkrun.sh libkrun
+      - name: vet
+        run: CGO_CFLAGS=-I$PWD/libkrun/include CGO_LDFLAGS=-L$PWD/libkrun/target/release go vet -tags krun .
+      - name: release com libkrun
+        run: |
+          make release VERSION=ci LIBKRUN=$PWD/libkrun
+          mkdir -p prefix/bin && tar -xzf nanoc-ci-darwin-arm64.tar.gz -C prefix
+          mv prefix/nanoc prefix/bin/
+          otool -L prefix/bin/nanoc | grep libkrun
+          prefix/bin/nanoc --version
+
   homebrew:
     runs-on: macos-15
     steps:

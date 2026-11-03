@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -32,6 +33,7 @@ func guestIP() string {
 const (
 	guestDockerPort  = 2375
 	guestControlPort = 2376
+	guestRelayPort   = 2377
 )
 
 // daemonLock fica aberto enquanto o daemon vive: o flock some junto com o processo.
@@ -115,6 +117,10 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			cmdline += " nanoc.datanew=1"
 		}
 	}
+	rosetta := rosettaShare()
+	if rosetta != nil {
+		cmdline += " nanoc.rosetta=1"
+	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine(cmdline),
 		vz.WithInitrd(initrd),
@@ -184,6 +190,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				shares = append(shares, usersShare)
 			}
 		}
+	}
+	if rosetta != nil {
+		shares = append(shares, rosetta)
 	}
 	cfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
 
@@ -294,6 +303,8 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	pf := newPortForward()
 	if !noDocker {
 		go pf.run(sockPath)
+		relay := relayDialer(func() (net.Conn, error) { return dialGuest(vm, guestRelayPort) })
+		go runDomains(sockPath, filepath.Dir(ctlPath), ev, pf.dial, relay)
 	}
 
 	go func() {
@@ -513,6 +524,28 @@ func guestControlRaw(vm *vz.VirtualMachine, payload map[string]any) map[string]a
 	return resp
 }
 
+// rosettaShare: o Rosetta para Linux da Apple como share virtiofs "rosetta", pela
+// API pública do Virtualization.framework. O guest registra no binfmt o Rosetta
+// no lugar do qemu-x86_64, e imagens amd64 rodam bem mais rápido. Só quando o
+// Rosetta está instalado no Mac (softwareupdate --install-rosetta); NANOC_ROSETTA=0
+// desliga.
+func rosettaShare() vz.DirectorySharingDeviceConfiguration {
+	if os.Getenv("NANOC_ROSETTA") == "0" ||
+		vz.LinuxRosettaDirectoryShareAvailability() != vz.LinuxRosettaAvailabilityInstalled {
+		return nil
+	}
+	fs, err := vz.NewVirtioFileSystemDeviceConfiguration("rosetta")
+	if err != nil {
+		return nil
+	}
+	share, err := vz.NewLinuxRosettaDirectoryShare()
+	if err != nil {
+		return nil
+	}
+	fs.SetDirectoryShare(share)
+	return fs
+}
+
 func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {
 	fs, err := vz.NewVirtioFileSystemDeviceConfiguration(tag)
 	if err != nil {
@@ -530,7 +563,7 @@ func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {
 	return fs, nil
 }
 
-// ensureDataImage cria o data.img esparso (8 GiB) se ele não existir. O guest só
+// ensureDataImage cria o data.img esparso (dataImageBytes) se ele não existir. O guest só
 // formata quando recebe nanoc.datanew=1, para nunca apagar um disco existente.
 func ensureDataImage(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
@@ -541,7 +574,30 @@ func ensureDataImage(path string) (bool, error) {
 		return false, err
 	}
 	defer f.Close()
-	return true, f.Truncate(8 << 30)
+	return true, f.Truncate(dataImageBytes())
+}
+
+// dataImageBytes: tamanho do data.img. O arquivo é esparso e só ocupa no Mac o
+// que o guest grava, então o teto pode ser folgado. NANOC_DISK_GB (padrão 64).
+func dataImageBytes() int64 {
+	gb := 64
+	if v, err := strconv.Atoi(os.Getenv("NANOC_DISK_GB")); err == nil && v >= 8 {
+		gb = v
+	}
+	return int64(gb) << 30
+}
+
+// growDataImage aumenta o data.img até dataImageBytes se ele for menor; nunca
+// diminui. O guest estende o ext4 no boot com resize2fs online.
+func growDataImage(path string) (bool, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if st.Size() >= dataImageBytes() {
+		return false, nil
+	}
+	return true, os.Truncate(path, dataImageBytes())
 }
 
 // startVM cria e liga a VM. O processo da VM anterior ainda segura os discos por

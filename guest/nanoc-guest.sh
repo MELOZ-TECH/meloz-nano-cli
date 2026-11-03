@@ -32,6 +32,10 @@ IP=$(sed -n 's/.*nanoc\.ip=\([0-9.]*\).*/\1/p' /proc/cmdline)
 [ -n "$IP" ] || IP=192.168.64.2
 ip link set lo up 2>/dev/null
 ip link set eth0 up 2>/dev/null
+# nanoc.mtu (libkrun): quadros grandes até a pilha de rede do host. A placa não
+# tem TSO, então cada pacote do guest vai inteiro num quadro só.
+MTU=$(sed -n 's/.*nanoc\.mtu=\([0-9]*\).*/\1/p' /proc/cmdline)
+[ -n "$MTU" ] && ip link set eth0 mtu "$MTU" 2>/dev/null
 ip addr add "$IP/24" dev eth0 2>/dev/null
 ip route add default via 192.168.64.1 2>/dev/null
 
@@ -47,6 +51,8 @@ if [ -n "$DATADEV" ] && [ -b "/dev/$DATADEV" ]; then
     mkfs.ext4 -q -F "/dev/$DATADEV" > /data/diag.log 2>&1
   fi
   { echo "dev: /dev/$DATADEV"; mount -t ext4 "/dev/$DATADEV" /var/lib/docker 2>&1; } > /data/mount.log 2>&1
+  # o host pode ter aumentado o data.img (esparso): estende o ext4 montado
+  command -v resize2fs >/dev/null && resize2fs "/dev/$DATADEV" >> /data/mount.log 2>&1
 else
   { echo "DATA=$DATA"; ls -l "/data" 2>&1 | head -5; command -v mkfs.ext4; } > /data/diag.log 2>&1
   if [ ! -e "/data/$DATA" ]; then
@@ -57,18 +63,32 @@ else
   fi
 fi
 
-# binfmt: imagens linux/amd64 rodam via qemu-x86_64
-if [ -x /usr/bin/qemu-x86_64 ]; then
-  mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
-  if [ -w /proc/sys/fs/binfmt_misc/register ]; then
-    echo ':qemu-x86_64:M::\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-x86_64:OCF' > /proc/sys/fs/binfmt_misc/register 2>/dev/null
+# binfmt: imagens linux/amd64 rodam pelo Rosetta quando o host o oferece (backend
+# VZ, nanoc.rosetta=1) e, senão, pelo qemu-x86_64
+X86_MAGIC='\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00'
+X86_MASK='\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+if [ -w /proc/sys/fs/binfmt_misc/register ]; then
+  if grep -q nanoc.rosetta=1 /proc/cmdline && mkdir -p /mnt/rosetta &&
+     mount -t virtiofs rosetta /mnt/rosetta 2>/dev/null && [ -x /mnt/rosetta/rosetta ]; then
+    echo ":rosetta:M::$X86_MAGIC:$X86_MASK:/mnt/rosetta/rosetta:CF" > /proc/sys/fs/binfmt_misc/register 2>/dev/null
+  elif [ -x /usr/bin/qemu-x86_64 ]; then
+    echo ":qemu-x86_64:M::$X86_MAGIC:$X86_MASK:/usr/bin/qemu-x86_64:OCF" > /proc/sys/fs/binfmt_misc/register 2>/dev/null
   fi
 fi
 
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 
 if ! grep -q nanoc.nodocker /proc/cmdline; then
-  dockerd --storage-driver=overlay2 >/data/dockerd.log 2>&1 &
+  # com nanoc.mtu, as redes bridge (a padrão e as novas, como as do compose)
+  # usam o mesmo MTU; senão os containers ficam presos a quadros de 1500 bytes
+  DOCKERD_CFG=
+  if [ -n "$MTU" ]; then
+    printf '{"mtu": %s, "default-network-opts": {"bridge": {"com.docker.network.driver.mtu": "%s"}}}\n' \
+      "$MTU" "$MTU" > /run/nanoc-dockerd.json
+    DOCKERD_CFG="--config-file /run/nanoc-dockerd.json"
+  fi
+  dockerd --storage-driver=overlay2 $DOCKERD_CFG >/data/dockerd.log 2>&1 &
   i=0
   while [ $i -lt 25 ]; do docker info >/dev/null 2>&1 && break; sleep 1; i=$((i+1)); done
 fi

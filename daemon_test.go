@@ -81,3 +81,28 @@ func TestDaemonAlive(t *testing.T) {
 		t.Fatal("lock solto deveria indicar daemon morto")
 	}
 }
+
+func TestGrowDataImage(t *testing.T) {
+	t.Setenv("NANOC_DISK_GB", "16")
+	p := filepath.Join(t.TempDir(), "data.img")
+	if created, err := ensureDataImage(p); err != nil || !created {
+		t.Fatalf("ensureDataImage: %v %v", created, err)
+	}
+	if st, _ := os.Stat(p); st.Size() != 16<<30 {
+		t.Fatalf("tamanho %d", st.Size())
+	}
+	if grown, err := growDataImage(p); err != nil || grown {
+		t.Fatalf("já tinha o tamanho: %v %v", grown, err)
+	}
+	t.Setenv("NANOC_DISK_GB", "32")
+	if grown, err := growDataImage(p); err != nil || !grown {
+		t.Fatalf("devia crescer: %v %v", grown, err)
+	}
+	t.Setenv("NANOC_DISK_GB", "8")
+	if grown, _ := growDataImage(p); grown {
+		t.Fatal("nunca diminui")
+	}
+	if st, _ := os.Stat(p); st.Size() != 32<<30 {
+		t.Fatalf("tamanho %d", st.Size())
+	}
+}

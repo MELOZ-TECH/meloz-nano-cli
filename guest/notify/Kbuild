@@ -1,0 +1,1 @@
+obj-m := nanoc_notify.o

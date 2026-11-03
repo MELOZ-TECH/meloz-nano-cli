@@ -1,8 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"net"
+	"strconv"
 	"sync"
+	"time"
 )
 
 // halfCloser é uma conexão que sabe fechar só o sentido de escrita.
@@ -34,4 +38,61 @@ func relay(a, b io.ReadWriteCloser) {
 	wg.Wait()
 	_ = a.Close()
 	_ = b.Close()
+}
+
+const relayOK = 0x06
+
+// proxyContainer: o Mac manda "ip:porta\n" e o agente conecta no container de
+// dentro da VM, onde as redes do Docker são alcançáveis. Só IPv4 privado (as
+// redes do Docker), para o repasse não virar um proxy para qualquer lugar.
+func proxyContainer(c io.ReadWriteCloser) {
+	addr, err := readAddr(c)
+	if err != nil {
+		c.Close()
+		return
+	}
+	up, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	if err != nil {
+		c.Close()
+		return
+	}
+	// um byte de confirmação: o Mac sabe que a conexão abriu (um agente antigo,
+	// sem esta porta, só fecha) e pode cair para a porta publicada
+	if _, err := c.Write([]byte{relayOK}); err != nil {
+		up.Close()
+		c.Close()
+		return
+	}
+	relay(c, up)
+}
+
+// readAddr lê "ip:porta\n" byte a byte, para não consumir o que vem depois.
+func readAddr(r io.Reader) (string, error) {
+	var b []byte
+	one := make([]byte, 1)
+	for len(b) < 64 {
+		if _, err := io.ReadFull(r, one); err != nil {
+			return "", err
+		}
+		if one[0] == '\n' {
+			return checkAddr(string(b))
+		}
+		b = append(b, one[0])
+	}
+	return "", fmt.Errorf("endereço longo demais")
+}
+
+func checkAddr(addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.To4() == nil || !ip.IsPrivate() {
+		return "", fmt.Errorf("%s não é IPv4 privado", host)
+	}
+	if p, err := strconv.Atoi(port); err != nil || p < 1 || p > 65535 {
+		return "", fmt.Errorf("porta inválida: %s", port)
+	}
+	return addr, nil
 }

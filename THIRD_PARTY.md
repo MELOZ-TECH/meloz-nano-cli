@@ -10,6 +10,9 @@ them, their licenses and where to get the corresponding source.
 | [Code-Hex/go-infinity-channel](https://github.com/Code-Hex/go-infinity-channel) | v1.0.0 | MIT | channel helper used by vz | github.com/Code-Hex/go-infinity-channel |
 | [golang.org/x/sys](https://pkg.go.dev/golang.org/x/sys) | v0.49.0 | BSD-3-Clause | syscalls, vsock, setns | cs.opensource.google/go/x/sys |
 | [golang.org/x/mod](https://pkg.go.dev/golang.org/x/mod) | v0.22.0 | BSD-3-Clause | module tooling (indirect) | cs.opensource.google/go/x/mod |
+| [libkrun](https://github.com/libkrun/libkrun) (`lib/libkrun.2.dylib`) | `main` at the commit in `build/krun/build-libkrun.sh`, **modified** | Apache-2.0 | libkrun backend VMM | github.com/libkrun/libkrun; changes in `build/krun/libkrun-nanoc-*.patch` |
+| [gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock) | v0.9.0 | Apache-2.0 | network of the libkrun backend | github.com/containers/gvisor-tap-vsock |
+| [gVisor](https://gvisor.dev) (netstack) | used by gvisor-tap-vsock | Apache-2.0 | userspace TCP/IP stack | github.com/google/gvisor |
 | [Linux kernel](https://kernel.org) (`Image`, modules) | 6.18.x-virt (Alpine edge) | GPL-2.0 | guest kernel | git.kernel.org; packaged by Alpine |
 | [Alpine Linux](https://alpinelinux.org) userspace | 3.22 | mixed (GPL-2.0, LGPL-2.1, MIT, BSD) | guest rootfs (EROFS) | gitlab.alpinelinux.org/alpine/aports |
 | [BusyBox](https://busybox.net) | Alpine 3.22 | GPL-2.0 | initramfs tools, `modprobe`, `losetup` | busybox.net |
@@ -22,6 +25,15 @@ them, their licenses and where to get the corresponding source.
 | [k3s](https://github.com/k3s-io/k3s) | latest arm64 (downloaded at runtime) | Apache-2.0 | optional Kubernetes | github.com/k3s-io/k3s |
 | [squashfs-tools](https://github.com/plougher/squashfs-tools) | build-time only | GPL-2.0 | rootfs/modloop packaging | github.com/plougher/squashfs-tools |
 | [erofs-utils](https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git) | build-time only | GPL-2.0 | EROFS rootfs | git.kernel.org/.../erofs-utils |
+
+## libkrun
+
+Releases bundle `lib/libkrun.2.dylib`, built by `build/krun/build-libkrun.sh`
+from libkrun `main` at a fixed commit with `build/krun/libkrun-nanoc-<commit>.patch`
+applied. The patch is the nanoc changes to libkrun, all sent upstream as pull
+requests (see `build/krun/README.md`), so the shipped library is a modified
+version of libkrun. Its license is in the release tarball as
+`licenses/libkrun-LICENSE`.
 
 ## GPL compliance
 

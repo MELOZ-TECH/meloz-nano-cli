@@ -151,11 +151,28 @@ docker run --rm alpine:3.22 echo hello
 | `nanoc k8s disable` | stops k3s (state stays on the data image) |
 | `nanoc k8s status` | shows whether Kubernetes is running |
 | `nanoc k8s reset` | removes the k3s data (use if the cluster is corrupted) |
+| `nanoc trust` | trusts the local CA of `https://<container>.nanoc.local` in your Keychain (asks for your password) |
 
 Environment variables: `NANOC_MEM_MB` (memory ceiling, default half the Mac's RAM,
 2–8 GB), `NANOC_MEM_MIN_MB` (starting memory, default `1024`), `NANOC_MEM_DYNAMIC=0`
 (fixed memory), `NANOC_DATA_BLK=0` (data image via loop instead of virtio-blk),
 `NANOC_ROOTFS`, `NANOC_DATA`, `NANOC_MODLOOP`, `NANOC_STATE`.
+
+### Container names
+
+Every container with an exposed TCP port answers at
+`https://<container>.nanoc.local`, published or not: `docker run -d --name web
+nginx` opens at `https://web.nanoc.local`. The name resolves to `127.0.0.1` and
+`::1` through the Mac's mDNSResponder (local only, no admin). A proxy on port
+443, bound to the loopback and refusing anything not from it, reaches the
+container through the guest agent (vsock port 2377), which connects to the
+container's address on the Docker network; with older guest assets it falls
+back to the published port. When a container exposes several ports the proxy
+picks 80, 8080, 3000, 8000, 5000, 443 or 8443 in that order, or the one in the
+`nanoc.port` label. Certificates come from a local CA in `~/.nanoc/ca.pem`,
+limited to `*.nanoc.local`; run `nanoc trust` once so browsers accept it. Plain
+HTTP uses port 80 when it is free. `NANOC_DOMAINS=0` turns this off;
+`NANOC_HTTPS_PORT` and `NANOC_HTTP_PORT` change the ports.
 
 ## How it works
 

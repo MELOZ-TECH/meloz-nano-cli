@@ -26,6 +26,20 @@ fetch "$BASE/vmlinuz-virt" "$ASSETS/vmlinuz-virt"
 fetch "$BASE/initramfs-virt" "$ASSETS/initramfs-virt"
 fetch "$BASE/modloop-virt" "$ASSETS/modloop-virt"
 
+# módulo nanoc_notify (avisos de arquivo do Mac para os containers no backend
+# libkrun) dentro do próprio modloop. Opcional: sem ele o daemon só desliga os
+# avisos. O marcador guarda o sha256 do modloop já empacotado.
+if [ "${NANOC_NOTIFY_MODULE:-1}" != 0 ] && \
+   [ "$(shasum -a 256 "$ASSETS/modloop-virt" | cut -d' ' -f1)" != "$(cat "$ASSETS/.modloop-notify" 2>/dev/null)" ]; then
+  if "$ROOT/guest/notify/build.sh" "$ASSETS/modloop-virt" &&
+     "$ROOT/guest/notify/pack-modloop.sh" "$ASSETS/modloop-virt" "$ASSETS/modloop-virt.notify"; then
+    mv "$ASSETS/modloop-virt.notify" "$ASSETS/modloop-virt"
+    shasum -a 256 "$ASSETS/modloop-virt" | cut -d' ' -f1 > "$ASSETS/.modloop-notify"
+  else
+    echo "aviso: modloop sem nanoc_notify; os containers no libkrun ficam sem avisos de arquivo"
+  fi
+fi
+
 # kernel EFI zboot -> Image arm64 cru
 if [ ! -f "$ASSETS/Image" ]; then
   python3 - "$ASSETS/vmlinuz-virt" "$ASSETS/Image" <<'PY'
@@ -93,6 +107,8 @@ fi
 # deixa os artefatos no layout usado pelo CLI (~/.nanoc/assets + rootfs.sqfs)
 mkdir -p "$STATE/assets"
 cp -f "$ASSETS/Image" "$ASSETS/initramfs.cpio.gz" "$ASSETS/modloop-virt" "$STATE/assets/" 2>/dev/null || true
+# o marcador diz ao daemon que este modloop traz o nanoc_notify (cache de 10 s em /Users)
+[ -f "$ASSETS/.modloop-notify" ] && cp -f "$ASSETS/.modloop-notify" "$STATE/assets/"
 cp -f "$STATE/rootfs.sqfs" "$STATE/rootfs.sqfs" 2>/dev/null || true
 
 echo "bootstrap concluído"
