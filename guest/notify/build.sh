@@ -36,7 +36,9 @@ apk add -q bc flex bison perl openssl-dev linux-headers gmp-dev mpc1-dev mpfr-de
 cd /k
 [ -d linux-$KVER ] || curl -fsSL https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz | tar xJ
 cd linux-$KVER
-curl -fsSL https://gitlab.alpinelinux.org/alpine/aports/-/raw/$APORTS/main/linux-lts/virt.aarch64.config -o .config
+# o espelho do GitHub primeiro: o GitLab do Alpine barra runners de CI (HTTP 418)
+curl -fsSL https://raw.githubusercontent.com/alpinelinux/aports/$APORTS/main/linux-lts/virt.aarch64.config -o .config ||
+  curl -fsSL https://gitlab.alpinelinux.org/alpine/aports/-/raw/$APORTS/main/linux-lts/virt.aarch64.config -o .config
 make -s olddefconfig
 make -s LOCALVERSION=$LOCALV -j\$(nproc) modules_prepare
 make -s LOCALVERSION=$LOCALV M=/mod KBUILD_MODPOST_WARN=1 modules 2>&1 | grep -v 'undefined!' || true
