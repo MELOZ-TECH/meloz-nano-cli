@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   assets:
-    runs-on: ubuntu-latest
+    # arm64 nativo: o bootstrap compila o nanoc_notify para o kernel do guest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

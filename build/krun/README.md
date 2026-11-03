@@ -25,22 +25,29 @@ it off.
 
 ## Build
 
-libkrun `main` at `a037532` (2.0.0-dev), with `libkrun-a037532.patch` applied:
+libkrun `main` at `302d447d` (2.0.0-dev), which has the two macOS fixes this
+backend first needed (libkrun/libkrun#971: `arm,primecell` on the PL011 node,
+without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus three
+patches sent upstream:
 
-- the PL011 node in the FDT gets `arm,primecell`, without which Linux never
-  creates `ttyAMA0`;
-- 2-byte MMIO writes are handled on macOS (the Linux PL011 driver does them,
-  and libkrun panicked with `unsupported mmio len=2`).
+- `libkrun-vsock-half-close.patch` (libkrun/libkrun#973): the unix vsock proxy
+  turns a half-close from the Mac side into a vsock shutdown instead of a reset,
+  so the guest can still answer (every `docker exec` depends on it), shuts down
+  each direction of the host socket separately, and gives accepted sockets
+  `SO_NOSIGPIPE`;
+- `libkrun-virtiofs-cache-timeouts.patch` (libkrun/libkrun#974):
+  `krun_fs_device_set_cache_timeouts`, used for the /Users cache below;
+- `libkrun-hvfgic-wake-wfi.patch` (libkrun/libkrun#975): with Apple's in-kernel
+  GIC, a device interrupt now wakes a vCPU parked on WFI (see "Idle guests").
 
-and with `libkrun-vsock-half-close.patch`: the unix vsock proxy turns a
-half-close from the Mac side into a vsock shutdown instead of a reset, so the
-guest can still answer (every `docker exec` depends on it), shuts down each
-direction of the host socket separately, and gives accepted sockets
-`SO_NOSIGPIPE`. Sent upstream as libkrun/libkrun#973.
+The three touch the same list of end-to-end tests, so they do not apply one after
+another; `libkrun-nanoc-302d447d.patch` is the three together, as built and tested
+here (`make test TEST='*'`: 20 of 21, the failure is the pre-existing
+`virtiofs-misc`):
 
 ```bash
-cd libkrun && git apply ../nano-container/build/krun/libkrun-a037532.patch
-git am ../nano-container/build/krun/libkrun-vsock-half-close.patch
+cd libkrun && git checkout 302d447d
+git apply ../nano-container/build/krun/libkrun-nanoc-302d447d.patch
 cargo build --release -p libkrun --no-default-features --features blk,net,ffi
 ```
 

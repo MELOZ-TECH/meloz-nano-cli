@@ -1,0 +1,28 @@
+name: notify-module
+
+# Compila o nanoc_notify para o kernel do modloop do Alpine e o põe no modloop,
+# como o bootstrap faz. Roda num runner arm64 para não depender do QEMU.
+on:
+  pull_request:
+    paths:
+      - 'guest/notify/**'
+      - 'scripts/bootstrap.sh'
+      - '.github/workflows/notify-module.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: modloop do Alpine
+        run: |
+          mkdir -p assets
+          curl -fsSL --retry 3 -o assets/modloop-virt \
+            https://dl-cdn.alpinelinux.org/alpine/edge/releases/aarch64/netboot/modloop-virt
+      - name: compilar o módulo
+        run: ./guest/notify/build.sh assets/modloop-virt
+      - name: empacotar no modloop
+        run: |
+          ./guest/notify/pack-modloop.sh assets/modloop-virt assets/modloop-virt.notify
+          ls -l assets

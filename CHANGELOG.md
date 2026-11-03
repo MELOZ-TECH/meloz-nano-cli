@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Experimental libkrun backend (`-tags krun`, `NANOC_BACKEND=krun nanoc up`): the
+  guest's freed memory goes back to macOS (free page reporting in Replace mode),
+  networking through embedded gvisor-tap-vsock with 64 KB frames (5–14 Gbit/s
+  between the Mac and containers), and the same sockets and commands as the
+  Virtualization.framework backend. Needs a patched libkrun; see
+  `build/krun/README.md`.
+- Hot reload on the libkrun backend: the daemon watches, with FSEvents, the
+  folders that running containers bind-mount from `/Users` and tells the guest
+  through a small kernel module (`guest/notify`, `/dev/nanoc_notify`), so
+  containers see Mac edits at once and get the inotify events. `bootstrap`
+  builds the module for the modloop's kernel and adds it to the modloop;
+  `NANOC_KRUN_NOTIFY=0` turns it off.
+- With the module present, `/Users` on the libkrun backend caches lookups and
+  attributes for 10 s (100 ms without it); `NANOC_KRUN_USERS_CACHE_MS` overrides.
+- `build/krun/vs-orbstack.sh`, `lat.py` and `ipi.py`: side-by-side and
+  per-request benchmarks against OrbStack.
 - `~/.nanoc/events.log`: one JSON line per daemon event (`daemon_start`,
   `guest_ready`, `stop_request`, `signal`, `vm_stopped`, `daemon_exit`). A stop
   request records the process that sent it and its parent, read from the

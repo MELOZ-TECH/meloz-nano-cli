@@ -1,4 +1,4 @@
-From fc6cbc7637b432fc2a7009cb18c8bf5a3b368fdb Mon Sep 17 00:00:00 2001
+From c381ada6971506d87a08722354015a86c418e2e1 Mon Sep 17 00:00:00 2001
 From: Romeu Melur <romeumello@icloud.com>
 Date: Tue, 3 Nov 2026 03:10:10 -0300
 Subject: [PATCH] virtio/fs: allow configuring lookup and attribute cache
@@ -12,7 +12,8 @@ expires; editors that save by rename leave it reading the replaced file.
 Expose FsDevice::set_cache_timeouts() in the Rust and C APIs to set the
 entry and attribute timeouts in milliseconds, keeping 5000 ms as the
 default. LinuxSimplified still never caches attributes; the requested
-attribute timeout is kept and applied when switching to LinuxComplete.
+attribute timeout is kept and applied when switching to LinuxComplete
+or LinuxSimplifiedFixedOwner.
 NullFs devices reject the call. Update documentation, regenerate
 bindings, and add unit tests and an end-to-end regression for a host
 growing, creating and replacing files while the guest uses them.
@@ -23,18 +24,18 @@ Signed-off-by: Romeu Melur <romeumello@icloud.com>
  .../libkrun-via-cdylib-weak/ffier-krun.json   |  33 +++
  docs/vm-lifecycle.md                          |   2 +
  include/libkrun.h                             |  12 ++
- src/devices/src/virtio/fs/device.rs           |  65 +++++-
+ src/devices/src/virtio/fs/device.rs           |  78 ++++++-
  src/libkrun/src/api/device_builders.rs        |  22 ++
  tests/test_cases/src/lib.rs                   |   7 +
  .../src/test_virtiofs_host_changes.rs         | 197 ++++++++++++++++++
- 7 files changed, 337 insertions(+), 1 deletion(-)
+ 7 files changed, 350 insertions(+), 1 deletion(-)
  create mode 100644 tests/test_cases/src/test_virtiofs_host_changes.rs
 
 diff --git a/bindings/libkrun-via-cdylib-weak/ffier-krun.json b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
-index 1c5262a7..f13ff695 100644
+index 8b64f3c5..b094b0b1 100644
 --- a/bindings/libkrun-via-cdylib-weak/ffier-krun.json
 +++ b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
-@@ -727,6 +727,39 @@
+@@ -767,6 +767,39 @@
              "c_convention": "out_param"
            },
            "ffi_name": "krun_fs_device_set_cache_policy"
@@ -48,8 +49,8 @@ index 1c5262a7..f13ff695 100644
 +            " timeouts expire: a file that grew on the host is read with its old size. Use 0 for",
 +            " directories the host modifies while the guest uses them, at the cost of one more",
 +            " request to the server per lookup or attribute read. With `LinuxSimplified`",
-+            " attributes are never cached, and `attr_timeout_ms` applies only after switching to",
-+            " `LinuxComplete`. A NullFs device has no host-backed entries and returns `InvalidParam`."
++            " attributes are never cached, and `attr_timeout_ms` applies again after switching to",
++            " another mode. A NullFs device has no host-backed entries and returns `InvalidParam`."
 +          ],
 +          "receiver": "mut",
 +          "params": [
@@ -88,10 +89,10 @@ index bca0370f..8a6e016f 100644
    - **TSI (Transparent Socket Impersonation)**: Built into `VsockDevice` with `TsiFlags::HIJACK_INET` and port forwarding.
    - **Virtio-net**: `NetDevice` connected via Unix stream or datagram socket (e.g. to `passt` or `gvproxy`).
 diff --git a/include/libkrun.h b/include/libkrun.h
-index 8ecfb7e9..bc6c5e05 100644
+index 0a1cc112..ad02600e 100644
 --- a/include/libkrun.h
 +++ b/include/libkrun.h
-@@ -283,6 +283,18 @@ typedef KrunResult (*krun_fs_device_set_permission_semantics_fn)(KrunFsDevice ha
+@@ -303,6 +303,18 @@ typedef KrunResult (*krun_fs_device_set_fixed_owner_fn)(KrunFsDevice handle, uin
   */
  KrunResult krun_fs_device_set_cache_policy(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
  typedef KrunResult (*krun_fs_device_set_cache_policy_fn)(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
@@ -102,8 +103,8 @@ index 8ecfb7e9..bc6c5e05 100644
 + * timeouts expire: a file that grew on the host is read with its old size. Use 0 for
 + * directories the host modifies while the guest uses them, at the cost of one more
 + * request to the server per lookup or attribute read. With `LinuxSimplified`
-+ * attributes are never cached, and `attr_timeout_ms` applies only after switching to
-+ * `LinuxComplete`. A NullFs device has no host-backed entries and returns `InvalidParam`.
++ * attributes are never cached, and `attr_timeout_ms` applies again after switching to
++ * another mode. A NullFs device has no host-backed entries and returns `InvalidParam`.
 + */
 +KrunResult krun_fs_device_set_cache_timeouts(KrunFsDevice handle, uint32_t entry_timeout_ms, uint32_t attr_timeout_ms, KrunError* err_out);
 +typedef KrunResult (*krun_fs_device_set_cache_timeouts_fn)(KrunFsDevice handle, uint32_t entry_timeout_ms, uint32_t attr_timeout_ms, KrunError* err_out);
@@ -111,7 +112,7 @@ index 8ecfb7e9..bc6c5e05 100644
  typedef void (*krun_fs_device_destroy_fn)(KrunFsDevice handle);
  
 diff --git a/src/devices/src/virtio/fs/device.rs b/src/devices/src/virtio/fs/device.rs
-index c5b1b3c1..5b6ee0e7 100644
+index 2ad76395..c1dc693e 100644
 --- a/src/devices/src/virtio/fs/device.rs
 +++ b/src/devices/src/virtio/fs/device.rs
 @@ -25,6 +25,9 @@ use super::worker::FsWorker;
@@ -129,7 +130,7 @@ index c5b1b3c1..5b6ee0e7 100644
      config: VirtioFsConfig,
      allow_idmap: bool,
 +    // Attribute timeout restored when switching back to LinuxComplete.
-+    complete_attr_timeout: Duration,
++    cached_attr_timeout: Duration,
      shm_region: Option<VirtioShmRegion>,
      passthrough_cfg: Option<passthrough::Config>,
      read_only: bool,
@@ -137,20 +138,20 @@ index c5b1b3c1..5b6ee0e7 100644
              device_state: DeviceState::Inactive,
              config,
              allow_idmap,
-+            complete_attr_timeout: DEFAULT_ATTR_TIMEOUT,
++            cached_attr_timeout: DEFAULT_ATTR_TIMEOUT,
              shm_region: None,
              passthrough_cfg: fs_cfg,
              read_only,
-@@ -124,7 +130,7 @@ impl Fs {
-         cfg.semantics = semantics;
-         // Simplified ownership is context-dependent, so attributes cannot be cached.
-         cfg.attr_timeout = if complete {
--            Duration::from_secs(5)
-+            self.complete_attr_timeout
-         } else {
+@@ -131,7 +137,7 @@ impl Fs {
+         cfg.attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
              Duration::ZERO
+         } else {
+-            Duration::from_secs(5)
++            self.cached_attr_timeout
          };
-@@ -141,6 +147,19 @@ impl Fs {
+         cfg.xattr = complete;
+         #[cfg(target_os = "macos")]
+@@ -178,6 +184,19 @@ impl Fs {
          true
      }
  
@@ -159,9 +160,9 @@ index c5b1b3c1..5b6ee0e7 100644
 +            return false;
 +        };
 +        cfg.entry_timeout = entry_timeout;
-+        self.complete_attr_timeout = attr_timeout;
-+        // Simplified ownership is context-dependent, so attributes stay uncached.
-+        if matches!(cfg.semantics, PermissionSemantics::LinuxComplete) {
++        self.cached_attr_timeout = attr_timeout;
++        // Requester ownership is context-dependent, so attributes stay uncached.
++        if !matches!(cfg.semantics, PermissionSemantics::LinuxSimplified) {
 +            cfg.attr_timeout = attr_timeout;
 +        }
 +        true
@@ -170,7 +171,7 @@ index c5b1b3c1..5b6ee0e7 100644
      pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
          static FS_UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
  
-@@ -375,6 +394,50 @@ mod tests {
+@@ -462,6 +481,63 @@ mod tests {
          }
      }
  
@@ -212,6 +213,19 @@ index c5b1b3c1..5b6ee0e7 100644
 +    }
 +
 +    #[test]
++    #[cfg(target_os = "macos")]
++    fn fixed_owner_semantics_use_the_cache_timeouts() {
++        let mut fs = filesystem(Some("/".to_owned()));
++        let attr_timeout = Duration::from_millis(123);
++        assert!(fs.set_cache_timeouts(Duration::from_secs(1), attr_timeout));
++        assert!(fs.set_permission_semantics(PermissionSemantics::LinuxSimplifiedFixedOwner));
++        assert_eq!(
++            fs.passthrough_cfg.as_ref().unwrap().attr_timeout,
++            attr_timeout
++        );
++    }
++
++    #[test]
 +    fn null_filesystems_reject_cache_timeouts() {
 +        let mut fs = filesystem(None);
 +        assert!(!fs.set_cache_timeouts(Duration::ZERO, Duration::ZERO));
@@ -222,10 +236,10 @@ index c5b1b3c1..5b6ee0e7 100644
      fn null_filesystems_reject_cache_policy_changes() {
          let mut fs = filesystem(None);
 diff --git a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
-index c9971744..cb0d4234 100644
+index 6b050fd4..21d4e353 100644
 --- a/src/libkrun/src/api/device_builders.rs
 +++ b/src/libkrun/src/api/device_builders.rs
-@@ -695,6 +695,28 @@ impl<'a> FsDevice<'a> {
+@@ -730,6 +730,28 @@ impl<'a> FsDevice<'a> {
          }
          Ok(())
      }
@@ -236,8 +250,8 @@ index c9971744..cb0d4234 100644
 +    /// timeouts expire: a file that grew on the host is read with its old size. Use 0 for
 +    /// directories the host modifies while the guest uses them, at the cost of one more
 +    /// request to the server per lookup or attribute read. With `LinuxSimplified`
-+    /// attributes are never cached, and `attr_timeout_ms` applies only after switching to
-+    /// `LinuxComplete`. A NullFs device has no host-backed entries and returns `InvalidParam`.
++    /// attributes are never cached, and `attr_timeout_ms` applies again after switching to
++    /// another mode. A NullFs device has no host-backed entries and returns `InvalidParam`.
 +    pub fn set_cache_timeouts(
 +        &mut self,
 +        entry_timeout_ms: u32,
@@ -255,7 +269,7 @@ index c9971744..cb0d4234 100644
  
  #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
 diff --git a/tests/test_cases/src/lib.rs b/tests/test_cases/src/lib.rs
-index b442b223..86958c60 100644
+index d4c78ecc..58ad156b 100644
 --- a/tests/test_cases/src/lib.rs
 +++ b/tests/test_cases/src/lib.rs
 @@ -54,6 +54,11 @@ mod test_vsock_guest_connect_emfile;
@@ -270,10 +284,10 @@ index b442b223..86958c60 100644
  mod test_tsi_tcp_guest_connect;
  use test_tsi_tcp_guest_connect::TestTsiTcpGuestConnect;
  
-@@ -218,6 +223,8 @@ pub fn test_cases() -> Vec<TestCase> {
-         TestCase::new("root-disk-remount", Box::new(TestRootDiskRemount)),
-         #[cfg(any(feature = "host", target_os = "linux"))]
+@@ -225,6 +230,8 @@ pub fn test_cases() -> Vec<TestCase> {
          TestCase::new("virtiofs-misc", Box::new(TestVirtioFsMisc)),
+         #[cfg(any(feature = "host", target_os = "linux"))]
+         TestCase::new("virtiofs-fixed-owner", Box::new(TestVirtiofsFixedOwner)),
 +        #[cfg(any(feature = "host", target_os = "linux"))]
 +        TestCase::new("virtiofs-host-changes", Box::new(TestVirtiofsHostChanges)),
          #[cfg(all(target_arch = "x86_64", target_os = "linux"))]

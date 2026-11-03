@@ -1,4 +1,4 @@
-From 03ecca4c5a2e2773a108486cd8d458639cfada91 Mon Sep 17 00:00:00 2001
+From 3287bfab8f5fdc4ceda35b70d8d6d7f1532906e5 Mon Sep 17 00:00:00 2001
 From: Romeu Melur <romeumello@icloud.com>
 Date: Tue, 3 Nov 2026 12:00:19 -0300
 Subject: [PATCH] devices/hvfgicv3: wake vCPUs parked on WFI when raising an
@@ -16,6 +16,7 @@ about 1 ms: a negative lookup took 975-1075 us, creating a file
 44-73 us and 293 us, and also helps a busy guest (lookup 154 -> 52 us).
 
 Assisted-by: Claude Code: claude-opus-5.5
+Signed-off-by: Romeu Melur <romeumello@icloud.com>
 ---
  src/devices/src/legacy/hvfgicv3.rs | 14 ++++++++++++--
  src/devices/src/legacy/vcpu.rs     | 14 ++++++++++++++
