@@ -12,7 +12,7 @@ jobs:
     # arm64 nativo: o bootstrap compila o nanoc_notify para o kernel do guest
     runs-on: ubuntu-24.04-arm
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
@@ -28,7 +28,7 @@ jobs:
     needs: assets
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
