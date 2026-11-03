@@ -116,8 +116,28 @@ Without the half-close patch, unpatched libkrun resets the connection when the
 Mac side closes its write side, and the response is lost: every `docker exec`
 prints nothing.
 
+## Network throughput
+
+`netbench.sh` runs iperf3 between the Mac and an alpine container, three 5 s
+runs per direction (Mbit/s). OrbStack's VMM uses MTU 65535 and a virtio-net
+header (`rsvm.monitor.NetworkMTU` returns `0xffff`, `NetworkWantsVnetHdrV1`
+returns true; its VZ path uses 1500 and no header). libkrun's unixgram backend
+does not carry the header, so the krun backend uses MTU 65520 with checksum
+offload and large receive buffers instead (`nanoc.mtu=65520` makes the guest set
+`eth0` and every Docker bridge network to that MTU).
+
+| Path | nanoc VZ | krun, MTU 1500 | krun, MTU 65520 | OrbStack |
+|---|---|---|---|---|
+| Mac → container (published port) | 3077–3377 | 65–196 | 5920–10362 | 2483–5641 |
+| container → Mac (published port) | 6335–6832 | 10–24 | 7873–14080 | 944–4209 |
+| container → Mac (host address) | 2971–12409 | 32–170 | 10952–14802 | 705–2601 |
+| Mac → container (host address) | 2425–2918 | 103–602 | 5275–9558 | 448–1217 |
+
+The VZ run had the 7 dbolt containers running in the same VM; the krun and
+OrbStack runs did not. Numbers vary a lot between runs on this 8 GB Mac.
+
 ## Not done
 
-Network throughput (offloads, a larger MTU, no
-background QoS), long uptime, real container load, and shipping the Rust dylib
+TSO (needs libkrun to pass the virtio-net header over the socket), background
+QoS, long uptime, real container load, and shipping the Rust dylib
 through Homebrew. libkrun 2.0 is not released yet.

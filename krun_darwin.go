@@ -54,6 +54,7 @@ typedef struct {
 	const char *sock_docker, *sock_control;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
 	int net_fd;
+	unsigned int net_features;
 	unsigned char mac[6];
 } nanoc_krun_cfg;
 
@@ -104,7 +105,7 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	if (c->net_fd >= 0) {
 		KrunNetDevice net;
 		TRY("net", net = krun_net_device_new_unixgram_fd(KRUN_STR("net0"), c->net_fd,
-			KRUN_BYTES(c->mac), 0, 0, &err));
+			KRUN_BYTES(c->mac), c->net_features, 0, &err));
 		krun_mmio_device_manager_add(devs, net);
 	}
 
@@ -151,6 +152,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
@@ -170,11 +172,38 @@ const hostAlias = ".254"
 
 // startNetwork sobe a rede virtual na mesma /24 do VZ (o script do guest usa o
 // .1 como gateway) e devolve o fd que vai para o virtio-net do libkrun.
+// Quadros de até 64 KB entre o guest e o gvisor, como o OrbStack (MTU 65535 no
+// VMM dele): com 1500, a rede ficava 20 a 300 vezes abaixo da do VZ. O libkrun
+// não leva o cabeçalho virtio-net pelo socket, então não há TSO; em troca a
+// placa promete aceitar pacotes grandes (GUEST_TSO4/6, que faz o Linux alocar
+// buffers de 64 KB) e não exige checksum na saída (CSUM): o gvisor-tap-vsock não
+// confere o checksum do que recebe. NANOC_KRUN_MTU troca o valor (1500 desliga).
+const (
+	virtioNetFCsum      = 1 << 0
+	virtioNetFGuestCsum = 1 << 1
+	virtioNetFGuestTSO4 = 1 << 7
+	virtioNetFGuestTSO6 = 1 << 8
+)
+
+func krunMTU() int {
+	if v, err := strconv.Atoi(os.Getenv("NANOC_KRUN_MTU")); err == nil && v >= 1280 && v <= 65520 {
+		return v
+	}
+	return 65520
+}
+
+func krunNetFeatures() uint32 {
+	if krunMTU() <= 1500 {
+		return 0
+	}
+	return virtioNetFCsum | virtioNetFGuestCsum | virtioNetFGuestTSO4 | virtioNetFGuestTSO6
+}
+
 func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
 	ip := guestIP()
 	prefix := ip[:strings.LastIndex(ip, ".")]
 	vn, err := virtualnetwork.New(&types.Configuration{
-		MTU:               1500,
+		MTU:               krunMTU(),
 		Subnet:            prefix + ".0/24",
 		GatewayIP:         prefix + ".1",
 		GatewayMacAddress: krunGatewayMAC,
@@ -192,7 +221,7 @@ func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
 	}
 	// o padrão do macOS (2 KB de envio) perde quadros em rajada
 	for _, fd := range fds {
-		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 1<<20)
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 2<<20)
 		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4<<20)
 	}
 	f := os.NewFile(uintptr(fds[0]), "gvisor-net")
@@ -216,6 +245,7 @@ type krunOpts struct {
 	cmdline                                     string
 	cpus, ramMiB, fprMode, logLevel             int
 	netFD                                       int // -1: sem rede
+	netFeatures                                 uint32
 }
 
 // krunRun entra no libkrun na thread atual. Só volta em erro: quando o guest
@@ -252,8 +282,9 @@ func krunRun(o krunOpts) error {
 		// o hvc0 é virtio e só existe depois do modprobe virtio_mmio; sem console no
 		// início, o runtime do Go do guestinit não acha os fds 0-2 e sai com código 2.
 		// A serial PL011 vem compilada no kernel e vira o console (o último vale).
-		serial: 1,
-		net_fd: C.int(o.netFD),
+		serial:       1,
+		net_fd:       C.int(o.netFD),
+		net_features: C.uint(o.netFeatures),
 	}
 	for i, b := range krunGuestMAC {
 		cfg.mac[i] = C.uchar(b)
@@ -272,6 +303,9 @@ func krunCmdline(created, noDocker bool) string {
 	}
 	if noDocker {
 		cmdline += " nanoc.nodocker=1"
+	}
+	if mtu := krunMTU(); mtu > 1500 {
+		cmdline += " nanoc.mtu=" + strconv.Itoa(mtu)
 	}
 	return cmdline + " console=ttyAMA0"
 }
@@ -334,6 +368,7 @@ func krunBoot(args []string) error {
 			return fmt.Errorf("rede: %w", err)
 		}
 		o.netFD = fd
+		o.netFeatures = krunNetFeatures()
 		// portas publicadas pelo Docker no guest em 127.0.0.1:<porta>, entrando
 		// pela pilha do gvisor (o IP do guest não existe fora dela)
 		if !*noDocker {

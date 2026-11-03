@@ -80,6 +80,7 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 		fprMode:     1, // KRUN_FREE_PAGE_REPORTING_MODE_REPLACE
 		logLevel:    2,
 		netFD:       fd,
+		netFeatures: krunNetFeatures(),
 	}
 
 	pidPath := ctlPath + ".pid"

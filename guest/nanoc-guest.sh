@@ -32,6 +32,10 @@ IP=$(sed -n 's/.*nanoc\.ip=\([0-9.]*\).*/\1/p' /proc/cmdline)
 [ -n "$IP" ] || IP=192.168.64.2
 ip link set lo up 2>/dev/null
 ip link set eth0 up 2>/dev/null
+# nanoc.mtu (libkrun): quadros grandes até a pilha de rede do host. A placa não
+# tem TSO, então cada pacote do guest vai inteiro num quadro só.
+MTU=$(sed -n 's/.*nanoc\.mtu=\([0-9]*\).*/\1/p' /proc/cmdline)
+[ -n "$MTU" ] && ip link set eth0 mtu "$MTU" 2>/dev/null
 ip addr add "$IP/24" dev eth0 2>/dev/null
 ip route add default via 192.168.64.1 2>/dev/null
 
@@ -68,7 +72,15 @@ fi
 printf "nameserver 1.1.1.1\nnameserver 8.8.8.8\n" > /etc/resolv.conf
 
 if ! grep -q nanoc.nodocker /proc/cmdline; then
-  dockerd --storage-driver=overlay2 >/data/dockerd.log 2>&1 &
+  # com nanoc.mtu, as redes bridge (a padrão e as novas, como as do compose)
+  # usam o mesmo MTU; senão os containers ficam presos a quadros de 1500 bytes
+  DOCKERD_CFG=
+  if [ -n "$MTU" ]; then
+    printf '{"mtu": %s, "default-network-opts": {"bridge": {"com.docker.network.driver.mtu": "%s"}}}\n' \
+      "$MTU" "$MTU" > /run/nanoc-dockerd.json
+    DOCKERD_CFG="--config-file /run/nanoc-dockerd.json"
+  fi
+  dockerd --storage-driver=overlay2 $DOCKERD_CFG >/data/dockerd.log 2>&1 &
   i=0
   while [ $i -lt 25 ]; do docker info >/dev/null 2>&1 && break; sleep 1; i=$((i+1)); done
 fi
