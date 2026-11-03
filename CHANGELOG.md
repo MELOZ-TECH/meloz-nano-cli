@@ -4,6 +4,22 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `~/.nanoc/events.log`: one JSON line per daemon event (`daemon_start`,
+  `guest_ready`, `stop_request`, `signal`, `vm_stopped`, `daemon_exit`). A stop
+  request records the process that sent it and its parent, read from the
+  control socket (`LOCAL_PEERPID`).
+- `nanoc up` starts the daemon under a small watcher (`nanoc watch`). A daemon
+  cannot log its own `SIGKILL`; the watcher logs the exit code or signal and,
+  when the exit was abnormal, memory, swap, the largest processes and the ones
+  started in the last two minutes.
+- `nanoc events [n]` prints the last events.
+- `nanoc mcp`: an MCP server over stdio with `status`, `events`, `daemon_log`,
+  `host_snapshot` and `guest_run`, so an agent can debug nanoc from data.
+
 ## [0.16.1] - 2026-11-02
 
 ### Fixed
