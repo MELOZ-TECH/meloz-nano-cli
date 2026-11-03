@@ -234,6 +234,19 @@ synchronous FUSE requests with an `HVC 0xC600E004` from `virtio_fs_enqueue_req`
 answers them on the vCPU thread, with no virtqueue, no worker thread and no
 interrupt; anything else falls back to the virtqueue.
 
+## Data disk (2026-11-03)
+
+`data.img` is created as a 64 GB sparse file (`NANOC_DISK_GB`, 8 before). On the
+libkrun backend `up` grows a smaller existing file (it never shrinks one) and the
+guest script runs `resize2fs` on the mounted ext4, which needs `e2fsprogs-extra`
+in the rootfs. The daemon runs `fstrim /var/lib/docker` every 5 minutes; libkrun's
+virtio-blk turns the discards into holes in the file.
+
+Test VM: an 8 GB disk took 7.9 MB on the Mac; after the next `up` the file was
+64 GB, the ext4 62.9 GB and an earlier file still there. Writing 1 GB took the
+file to 1.0 GB, and deleting it plus `fstrim` brought it back to 18 MB. On the
+dbolt VM a first `fstrim` gave back 1.2 GB (5.8 → 4.6 GB).
+
 ## Not done
 
 Building `nanoc_notify.ko` natively in CI (the release job runs it under QEMU), TSO (needs libkrun to pass the virtio-net header over the socket), background

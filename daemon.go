@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -530,7 +531,7 @@ func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {
 	return fs, nil
 }
 
-// ensureDataImage cria o data.img esparso (8 GiB) se ele não existir. O guest só
+// ensureDataImage cria o data.img esparso (dataImageBytes) se ele não existir. O guest só
 // formata quando recebe nanoc.datanew=1, para nunca apagar um disco existente.
 func ensureDataImage(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
@@ -541,7 +542,30 @@ func ensureDataImage(path string) (bool, error) {
 		return false, err
 	}
 	defer f.Close()
-	return true, f.Truncate(8 << 30)
+	return true, f.Truncate(dataImageBytes())
+}
+
+// dataImageBytes: tamanho do data.img. O arquivo é esparso e só ocupa no Mac o
+// que o guest grava, então o teto pode ser folgado. NANOC_DISK_GB (padrão 64).
+func dataImageBytes() int64 {
+	gb := 64
+	if v, err := strconv.Atoi(os.Getenv("NANOC_DISK_GB")); err == nil && v >= 8 {
+		gb = v
+	}
+	return int64(gb) << 30
+}
+
+// growDataImage aumenta o data.img até dataImageBytes se ele for menor; nunca
+// diminui. O guest estende o ext4 no boot com resize2fs online.
+func growDataImage(path string) (bool, error) {
+	st, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	if st.Size() >= dataImageBytes() {
+		return false, nil
+	}
+	return true, os.Truncate(path, dataImageBytes())
 }
 
 // startVM cria e liga a VM. O processo da VM anterior ainda segura os discos por

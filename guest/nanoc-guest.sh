@@ -51,6 +51,8 @@ if [ -n "$DATADEV" ] && [ -b "/dev/$DATADEV" ]; then
     mkfs.ext4 -q -F "/dev/$DATADEV" > /data/diag.log 2>&1
   fi
   { echo "dev: /dev/$DATADEV"; mount -t ext4 "/dev/$DATADEV" /var/lib/docker 2>&1; } > /data/mount.log 2>&1
+  # o host pode ter aumentado o data.img (esparso): estende o ext4 montado
+  command -v resize2fs >/dev/null && resize2fs "/dev/$DATADEV" >> /data/mount.log 2>&1
 else
   { echo "DATA=$DATA"; ls -l "/data" 2>&1 | head -5; command -v mkfs.ext4; } > /data/diag.log 2>&1
   if [ ! -e "/data/$DATA" ]; then

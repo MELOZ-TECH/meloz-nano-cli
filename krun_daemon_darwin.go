@@ -48,6 +48,11 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 	if err != nil {
 		return err
 	}
+	if grown, err := growDataImage(dataPath); err != nil {
+		return err
+	} else if grown {
+		logEvent(eventsFile(stateDir), "data_grown", map[string]any{"bytes": dataImageBytes()})
+	}
 	noDocker := os.Getenv("NANOC_NO_DOCKER") == "1"
 	cmdline := krunCmdline(created, noDocker)
 	if v := os.Getenv("NANOC_HOSTNAME"); v != "" {
@@ -176,6 +181,7 @@ func krunServe(o krunOpts, vn interface {
 	}
 
 	go krunDropCaches(o.sockControl)
+	go krunTrim(o.sockControl)
 
 	for {
 		c, err := ctl.Accept()
@@ -220,6 +226,16 @@ func krunDropCaches(agentControl string) {
 		time.Sleep(45 * time.Second)
 		krunAgent(agentControl, map[string]any{"cmd": "run", "argv": []string{"sh", "-c",
 			"echo 1 > /proc/sys/vm/drop_caches"}})
+	}
+}
+
+// krunTrim devolve ao Mac, a cada 5 min, os blocos que o Docker apagou: o
+// data.img é esparso e o virtio-blk do libkrun transforma o discard do guest em
+// buraco no arquivo. Sem isso o arquivo só cresce.
+func krunTrim(agentControl string) {
+	for {
+		time.Sleep(5 * time.Minute)
+		krunAgent(agentControl, map[string]any{"cmd": "run", "argv": []string{"fstrim", "/var/lib/docker"}})
 	}
 }
 
