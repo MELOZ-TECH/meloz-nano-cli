@@ -34,8 +34,9 @@ libkrun `main` at `a037532` (2.0.0-dev), with `libkrun-a037532.patch` applied:
 
 and with `libkrun-vsock-half-close.patch`: the unix vsock proxy turns a
 half-close from the Mac side into a vsock shutdown instead of a reset, so the
-guest can still answer (every `docker exec` depends on it), and accepted sockets
-get `SO_NOSIGPIPE`.
+guest can still answer (every `docker exec` depends on it), shuts down each
+direction of the host socket separately, and gives accepted sockets
+`SO_NOSIGPIPE`. Sent upstream as libkrun/libkrun#973.
 
 ```bash
 cd libkrun && git apply ../nano-container/build/krun/libkrun-a037532.patch
@@ -117,6 +118,6 @@ prints nothing.
 
 ## Not done
 
-Sending the half-close fix upstream, network throughput (offloads, a larger MTU, no
+Network throughput (offloads, a larger MTU, no
 background QoS), long uptime, real container load, and shipping the Rust dylib
 through Homebrew. libkrun 2.0 is not released yet.

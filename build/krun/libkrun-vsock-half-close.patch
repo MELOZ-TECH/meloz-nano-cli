@@ -1,10 +1,10 @@
-From 5cd16cc2504966e4805c9d1ad2687926a378bdbf Mon Sep 17 00:00:00 2001
+From 57c0513b1020dc59198e1c0fc3b527979e798eb0 Mon Sep 17 00:00:00 2001
 From: Romeu Melur <romeumello@icloud.com>
 Date: Tue, 3 Nov 2026 00:51:54 -0300
 Subject: [PATCH] virtio/vsock: preserve half-close semantics in the unix proxy
 
-When the host side of a unix socket proxy shuts down its write side,
-recv() returns 0 and the proxy answered with a reset, so the guest
+When the host side of a unix socket proxy shut down its write side,
+recv() returned 0 and the proxy answered with a reset, so the guest
 could never send its reply. Clients such as the Docker CLI half-close
 every request stream (`docker exec`, piped stdin), and the response
 was lost.
@@ -14,16 +14,29 @@ data already pushed, stop read polling and keep late credit updates
 from restarting it, as the TSI stream proxy does since 3f76a106. Fatal
 socket errors still reset the connection.
 
+Shut down each direction of the host socket separately: on macOS,
+shutdown(SHUT_RDWR) on a socket whose peer already shut down its write
+side fails with ENOTCONN, so the host only saw EOF once the proxy was
+reaped.
+
 On macOS, set SO_NOSIGPIPE on accepted sockets too: the guest can now
 keep writing after the host side is gone, and that write must fail
 with EPIPE instead of killing the VMM with SIGPIPE.
 
-Assisted-by: Claude Code: claude-opus-5-5
+Add an end-to-end regression covering both directions (host connecting
+to a guest listener and the guest connecting out) with small,
+multi-buffer and empty requests followed by host SHUT_WR.
+
+Assisted-by: Claude Code: claude-opus-5.5
+Signed-off-by: Romeu Melur <romeumello@icloud.com>
 ---
- .../src/virtio/vsock/unix_proxy/mod.rs        | 28 ++++++--
- .../src/virtio/vsock/unix_proxy/unix.rs       | 64 +++++++++++--------
- .../src/virtio/vsock/unix_proxy/windows.rs    | 24 ++++---
- 3 files changed, 74 insertions(+), 42 deletions(-)
+ .../src/virtio/vsock/unix_proxy/mod.rs        |  28 +-
+ .../src/virtio/vsock/unix_proxy/unix.rs       |  82 +++---
+ .../src/virtio/vsock/unix_proxy/windows.rs    |  24 +-
+ tests/test_cases/src/lib.rs                   |   7 +
+ .../src/test_vsock_unix_half_close.rs         | 252 ++++++++++++++++++
+ 5 files changed, 341 insertions(+), 52 deletions(-)
+ create mode 100644 tests/test_cases/src/test_vsock_unix_half_close.rs
 
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/mod.rs b/src/devices/src/virtio/vsock/unix_proxy/mod.rs
 index 15818d18..ee827bc3 100644
@@ -99,7 +112,7 @@ index 15818d18..ee827bc3 100644
                  Err(e) => {
                      debug!("recv_pkt: RX queue error: {e:?}");
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/unix.rs b/src/devices/src/virtio/vsock/unix_proxy/unix.rs
-index 00e62c86..81599fb3 100644
+index 00e62c86..63d26fac 100644
 --- a/src/devices/src/virtio/vsock/unix_proxy/unix.rs
 +++ b/src/devices/src/virtio/vsock/unix_proxy/unix.rs
 @@ -44,23 +44,26 @@ pub(crate) fn create_socket(id: u64) -> Result<PlatformHandle, ProxyError> {
@@ -203,7 +216,32 @@ index 00e62c86..81599fb3 100644
          return ProxyUpdate::default();
      }
  
-@@ -404,8 +408,8 @@ pub(crate) fn process_event(proxy: &mut super::UnixProxy, evset: EventSet) -> Pr
+@@ -316,16 +320,14 @@ pub(crate) fn do_shutdown(proxy: &mut super::UnixProxy, pkt: &VsockPacket) {
+     let recv_off = pkt.flags() & super::uapi::VSOCK_FLAGS_SHUTDOWN_RCV != 0;
+     let send_off = pkt.flags() & super::uapi::VSOCK_FLAGS_SHUTDOWN_SEND != 0;
+ 
+-    let how = if recv_off && send_off {
+-        Shutdown::Both
+-    } else if recv_off {
+-        Shutdown::Read
+-    } else {
+-        Shutdown::Write
+-    };
+-
+-    if let Err(e) = shutdown(proxy.fd.as_raw_fd(), how) {
+-        warn!("error sending shutdown to socket: {e}");
++    // Shutdown each direction independently: on macOS, shutdown(SHUT_RDWR) on
++    // a socket whose peer already shut down its write side returns ENOTCONN,
++    // and the host never sees EOF until the proxy is reaped.
++    if send_off && let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Write) {
++        debug!("error sending shutdown(Write) to socket: {e}");
++    }
++    if recv_off && let Err(e) = shutdown(proxy.fd.as_raw_fd(), Shutdown::Read) {
++        debug!("error sending shutdown(Read) to socket: {e}");
+     }
+ }
+ 
+@@ -404,8 +406,8 @@ pub(crate) fn process_event(proxy: &mut super::UnixProxy, evset: EventSet) -> Pr
                  update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
                  update.remove_proxy = ProxyRemoval::Deferred;
                  return update;
@@ -214,7 +252,7 @@ index 00e62c86..81599fb3 100644
                  update.polling = Some((proxy.id, proxy.fd.as_raw_fd(), EventSet::empty()));
              }
          } else {
-@@ -477,6 +481,10 @@ pub(crate) fn process_acceptor_event(
+@@ -477,6 +479,10 @@ pub(crate) fn process_acceptor_event(
              Ok(accept_fd) => {
                  // Safe because we've just obtained the FD from the `accept` call above.
                  let new_fd = unsafe { OwnedFd::from_raw_fd(accept_fd) };
@@ -295,6 +333,289 @@ index 039394f9..21237f83 100644
                  update.polling = Some((
                      proxy.id,
                      proxy.fd.as_raw_socket() as RawFd,
+diff --git a/tests/test_cases/src/lib.rs b/tests/test_cases/src/lib.rs
+index b442b223..4dde1339 100644
+--- a/tests/test_cases/src/lib.rs
++++ b/tests/test_cases/src/lib.rs
+@@ -54,6 +54,11 @@ mod test_vsock_guest_connect_emfile;
+ #[cfg(any(feature = "host", target_os = "linux"))]
+ use test_vsock_guest_connect_emfile::TestVsockGuestConnectEmfile;
+ 
++#[cfg(any(feature = "host", target_os = "linux"))]
++mod test_vsock_unix_half_close;
++#[cfg(any(feature = "host", target_os = "linux"))]
++use test_vsock_unix_half_close::TestVsockUnixHalfClose;
++
+ mod test_tsi_tcp_guest_connect;
+ use test_tsi_tcp_guest_connect::TestTsiTcpGuestConnect;
+ 
+@@ -191,6 +196,8 @@ pub fn test_cases() -> Vec<TestCase> {
+             "vsock-guest-connect-emfile",
+             Box::new(TestVsockGuestConnectEmfile),
+         ),
++        #[cfg(any(feature = "host", target_os = "linux"))]
++        TestCase::new("vsock-unix-half-close", Box::new(TestVsockUnixHalfClose)),
+         TestCase::new(
+             "tsi-tcp-guest-connect",
+             Box::new(TestTsiTcpGuestConnect::new()),
+diff --git a/tests/test_cases/src/test_vsock_unix_half_close.rs b/tests/test_cases/src/test_vsock_unix_half_close.rs
+new file mode 100644
+index 00000000..d74e2e63
+--- /dev/null
++++ b/tests/test_cases/src/test_vsock_unix_half_close.rs
+@@ -0,0 +1,252 @@
++#![cfg(any(feature = "host", target_os = "linux"))]
++
++//! The host side of a unix socket proxy sends a request, shuts down its write
++//! side and expects the whole reply followed by EOF, the way the Docker CLI
++//! talks to a daemon. This used to reset the connection as soon as the host's
++//! EOF reached the proxy, so the guest could never answer. Both directions are
++//! covered: the host connecting to a guest listener (`listen=true`) and the
++//! guest connecting out to a host listener (`listen=false`).
++
++use macros::{guest, host};
++use std::time::Duration;
++
++pub struct TestVsockUnixHalfClose;
++
++/// The guest connects out on this port once its listener is bound, and the
++/// host reports the outcome back on the same connection.
++const CONTROL_PORT: u32 = 1234;
++/// Registered with `listen=true`: the host connects, the guest accepts.
++const ACCEPT_PORT: u32 = 1235;
++/// Registered with `listen=false`: the guest connects, the host accepts.
++const CONNECT_PORT: u32 = 1236;
++
++const EXCHANGES: [(usize, usize); 3] = [(17, 17), (256 * 1024, 256 * 1024), (0, 17)];
++const IO_TIMEOUT: Duration = Duration::from_secs(5);
++
++fn payload(seed: u8, len: usize) -> Vec<u8> {
++    (0..len)
++        .map(|index| (index as u8).wrapping_add(seed))
++        .collect()
++}
++
++#[host]
++mod host {
++    use super::*;
++    #[cfg(feature = "dynamic-linking")]
++    use krun::DeviceManager;
++
++    use anyhow::{Context, ensure};
++    use std::io::{Read, Write};
++    use std::net::Shutdown;
++    use std::os::unix::net::{UnixListener, UnixStream};
++    use std::path::Path;
++    use std::thread;
++    use std::time::Instant;
++
++    use crate::common::{build_init_config, init_krun, setup_standard_devices};
++    use crate::{ShouldRun, Test, TestSetup};
++
++    #[cfg(feature = "dynamic-linking")]
++    fn require_symbols() -> Result<(), libloading::Error> {
++        crate::common::require_vm_symbols()?;
++        krun::require(
++            None,
++            &[
++                krun::Symbol::KrunVsockDeviceNew,
++                krun::Symbol::KrunVsockDeviceDestroy,
++                krun::Symbol::KrunVsockDeviceAddUnixPort,
++            ],
++        )
++    }
++
++    /// Send the request, half-close it and read the reply up to EOF.
++    fn exchange(mut stream: UnixStream, index: usize) -> anyhow::Result<()> {
++        let (request_len, response_len) = EXCHANGES[index];
++        stream.set_read_timeout(Some(IO_TIMEOUT))?;
++        stream.set_write_timeout(Some(IO_TIMEOUT))?;
++        stream
++            .write_all(&payload(index as u8, request_len))
++            .context("send request")?;
++        stream
++            .shutdown(Shutdown::Write)
++            .context("half-close request")?;
++
++        let started = Instant::now();
++        let mut response = Vec::new();
++        stream
++            .read_to_end(&mut response)
++            .context("receive reply and EOF")?;
++        ensure!(
++            started.elapsed() < IO_TIMEOUT,
++            "reply and EOF took at least {IO_TIMEOUT:?}"
++        );
++        ensure!(
++            response == payload((index as u8).wrapping_add(128), response_len),
++            "incorrect reply for exchange {index}: {} bytes",
++            response.len()
++        );
++        Ok(())
++    }
++
++    fn run_client(accept_sock: &Path, connect_listener: &UnixListener) -> anyhow::Result<()> {
++        for index in 0..EXCHANGES.len() {
++            let stream = UnixStream::connect(accept_sock).context("connect to guest")?;
++            exchange(stream, index).with_context(|| format!("host-initiated exchange {index}"))?;
++        }
++        for index in 0..EXCHANGES.len() {
++            let (stream, _) = connect_listener.accept().context("accept guest")?;
++            exchange(stream, index).with_context(|| format!("guest-initiated exchange {index}"))?;
++        }
++        Ok(())
++    }
++
++    fn run(control_listener: UnixListener, accept_sock: &Path, connect_listener: UnixListener) {
++        // Returns once the guest has bound its listener.
++        let (mut control, _) = control_listener.accept().unwrap();
++
++        let status = match run_client(accept_sock, &connect_listener) {
++            Ok(()) => 1,
++            Err(error) => {
++                eprintln!("half-close client failed: {error:#}");
++                0
++            }
++        };
++        control.write_all(&[status]).unwrap();
++        // Keep the connection open until the guest has read the status.
++        let _ = control.read(&mut [0]);
++    }
++
++    impl Test for TestVsockUnixHalfClose {
++        fn should_run(&self) -> ShouldRun {
++            #[cfg(feature = "dynamic-linking")]
++            if require_symbols().is_err() {
++                return ShouldRun::No("feature not enabled in this libkrun build");
++            }
++            ShouldRun::Yes
++        }
++
++        fn timeout_secs(&self) -> u64 {
++            30
++        }
++
++        fn start_vm(self: Box<Self>, test_setup: TestSetup) -> anyhow::Result<()> {
++            init_krun()?;
++            #[cfg(feature = "dynamic-linking")]
++            require_symbols().unwrap();
++
++            let control_sock = test_setup.tmp_dir.join("control.sock");
++            let accept_sock = test_setup.tmp_dir.join("accept.sock");
++            let connect_sock = test_setup.tmp_dir.join("connect.sock");
++
++            let control_listener = UnixListener::bind(&control_sock)?;
++            let connect_listener = UnixListener::bind(&connect_sock)?;
++            let accept_sock_clone = accept_sock.clone();
++            thread::spawn(move || run(control_listener, &accept_sock_clone, connect_listener));
++
++            let init_config = build_init_config(&test_setup.test_case, &[]);
++            let stdin = std::io::stdin();
++            let stdout = std::io::stdout();
++            let stderr = std::io::stderr();
++            let (mut devices, payload) =
++                setup_standard_devices(&test_setup, &init_config, &stdin, &stdout, &stderr)?;
++            let mut vsock = krun::VsockDevice::new(3, krun::TsiFlags::empty())
++                .map_err(|e| anyhow::anyhow!("VsockDevice: {e:?}"))?;
++            vsock.add_unix_port(CONTROL_PORT, control_sock.to_str().unwrap(), false);
++            vsock.add_unix_port(ACCEPT_PORT, accept_sock.to_str().unwrap(), true);
++            vsock.add_unix_port(CONNECT_PORT, connect_sock.to_str().unwrap(), false);
++            devices.add(vsock);
++
++            let vmm = krun::VmmBuilder::new()
++                .vcpus(1)
++                .map_err(|e| anyhow::anyhow!("vcpus: {e:?}"))?
++                .ram_mib(512)
++                .map_err(|e| anyhow::anyhow!("ram_mib: {e:?}"))?
++                .payload(payload)
++                .devices(devices)
++                .build()
++                .map_err(|e| anyhow::anyhow!("build: {e:?}"))?;
++
++            vmm.run();
++            unreachable!()
++        }
++    }
++}
++
++#[guest]
++mod guest {
++    use super::*;
++    use crate::Test;
++    use nix::libc::VMADDR_CID_HOST;
++    use nix::sys::socket::{
++        AddressFamily, Backlog, SockFlag, SockType, VsockAddr, accept, bind, connect, listen,
++        socket,
++    };
++    use std::io::{Read, Write};
++    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
++    use std::os::unix::net::UnixStream;
++
++    fn vsock_connect(port: u32) -> UnixStream {
++        let sock = socket(
++            AddressFamily::Vsock,
++            SockType::Stream,
++            SockFlag::empty(),
++            None,
++        )
++        .unwrap();
++        connect(sock.as_raw_fd(), &VsockAddr::new(VMADDR_CID_HOST, port)).unwrap();
++        UnixStream::from(sock)
++    }
++
++    /// Read the request up to the host's EOF, then reply and close.
++    fn serve(mut stream: UnixStream, index: usize) {
++        let (request_len, response_len) = EXCHANGES[index];
++        stream.set_read_timeout(Some(IO_TIMEOUT)).unwrap();
++        stream.set_write_timeout(Some(IO_TIMEOUT)).unwrap();
++        let mut request = Vec::new();
++        stream.read_to_end(&mut request).unwrap();
++        assert_eq!(request, payload(index as u8, request_len));
++        stream
++            .write_all(&payload((index as u8).wrapping_add(128), response_len))
++            .unwrap();
++    }
++
++    impl Test for TestVsockUnixHalfClose {
++        fn in_guest(self: Box<Self>) {
++            let listener = socket(
++                AddressFamily::Vsock,
++                SockType::Stream,
++                SockFlag::empty(),
++                None,
++            )
++            .unwrap();
++            bind(
++                listener.as_raw_fd(),
++                &VsockAddr::new(nix::libc::VMADDR_CID_ANY, ACCEPT_PORT),
++            )
++            .unwrap();
++            listen(&listener, Backlog::new(4).unwrap()).unwrap();
++
++            let mut control = vsock_connect(CONTROL_PORT);
++
++            for index in 0..EXCHANGES.len() {
++                let fd = accept(listener.as_raw_fd()).unwrap();
++                // Safe because we've just obtained the FD from the `accept` call above.
++                let stream = UnixStream::from(unsafe { OwnedFd::from_raw_fd(fd) });
++                serve(stream, index);
++            }
++            for index in 0..EXCHANGES.len() {
++                serve(vsock_connect(CONNECT_PORT), index);
++            }
++
++            let mut status = [0];
++            control.read_exact(&mut status).unwrap();
++            control.write_all(&[1]).unwrap();
++            assert_eq!(
++                status,
++                [1],
++                "host did not receive the complete replies and EOF"
++            );
++            println!("OK");
++        }
++    }
++}
 -- 
 2.38.1
 
