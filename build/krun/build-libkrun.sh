@@ -9,7 +9,12 @@ set -e
 COMMIT=302d447d
 HERE=$(cd "$(dirname "$0")" && pwd)
 DIR=${1:?pasta do clone do libkrun}
-[ -e "$DIR/.git" ] || git clone -q https://github.com/libkrun/libkrun.git "$DIR"
+# init + fetch no lugar de clone: o cache do CI recria <pasta>/target antes daqui
+if [ ! -e "$DIR/.git" ]; then
+  mkdir -p "$DIR"
+  git -C "$DIR" init -q
+  git -C "$DIR" remote add origin https://github.com/libkrun/libkrun.git
+fi
 cd "$DIR"
 git fetch -q origin
 git checkout -q --detach "$COMMIT"
