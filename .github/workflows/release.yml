@@ -40,7 +40,7 @@ jobs:
         run: build/krun/build-libkrun.sh libkrun
       - name: build artifact
         run: make release VERSION=${GITHUB_REF_NAME} LIBKRUN=$PWD/libkrun
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: assets
           path: dist
