@@ -171,6 +171,7 @@ func krunServe(o krunOpts, vn interface {
 			}
 		}()
 		go pf.run(sockPath)
+		go krunNotify(o.sockControl, sockPath, ev)
 		fmt.Fprintf(os.Stderr, "docker do guest disponível em %s\n", sockPath)
 	}
 

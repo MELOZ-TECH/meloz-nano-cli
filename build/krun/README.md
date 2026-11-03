@@ -136,8 +136,36 @@ offload and large receive buffers instead (`nanoc.mtu=65520` makes the guest set
 The VZ run had the 7 dbolt containers running in the same VM; the krun and
 OrbStack runs did not. Numbers vary a lot between runs on this 8 GB Mac.
 
+## Mac file changes in containers (2026-11-03)
+
+Without help, a container sees a file the Mac changed only after the virtiofs
+cache expires, and inotify inside the container never fires, so hot reload needs
+polling. OrbStack solves this with FSEvents on the Mac and its own kernel
+(`/dev/krpc`). nanoc does the same with a small module on the stock Alpine kernel:
+
+- `guest/notify/nanoc_notify.c` creates `/dev/nanoc_notify`, which takes lines
+  `<c|m|a|d> <path>`. For each one it drops the cached dentry and fires the
+  matching fsnotify event (CREATE, MODIFY+CLOSE_WRITE, ATTRIB, DELETE).
+  `guest/notify/build.sh` builds it for 6.18.42-0-virt.
+- The daemon loads it with `insmod` after boot (the guest reads the `.ko` through
+  the /Users share; `NANOC_KRUN_NOTIFY_KO`, default `~/.nanoc/nanoc_notify.ko`;
+  `NANOC_KRUN_NOTIFY=0` turns it off). It then watches, with FSEvents, only the
+  /Users folders that running containers bind-mount (refreshed every 2 s) and
+  writes the changes to the device, batched over 20 ms.
+- FSEvents keeps old flags for a path (a file created and then edited arrives
+  with Created on every later event), so after the first event per path the
+  choice between m and a comes from comparing `lstat`, and Created on a file born
+  before the watch started is ignored. The stream uses `MarkSelf`, so writes the
+  guest made through virtiofs are dropped instead of echoed back.
+
+`fsevents-test.sh`, with /Users on a 5 s cache and no notice injected by hand:
+the container read a file grown on the Mac 72–142 ms later (without the module it
+read the old content for up to 5 s), and `inotifywait` saw exactly one
+MODIFY,CLOSE_WRITE, CREATE, DELETE and ATTRIB, and no echo of its own write. The
+kernel is tainted (out-of-tree, unsigned module), with no oops.
+
 ## Not done
 
-TSO (needs libkrun to pass the virtio-net header over the socket), background
+Shipping `nanoc_notify.ko` in the modloop, TSO (needs libkrun to pass the virtio-net header over the socket), background
 QoS, long uptime, real container load, and shipping the Rust dylib
 through Homebrew. libkrun 2.0 is not released yet.
