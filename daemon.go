@@ -68,6 +68,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	if err := lockDaemon(ctlPath); err != nil {
 		return err
 	}
+	ev := eventsFile(filepath.Dir(ctlPath))
+	started := time.Now()
+	logEvent(ev, "daemon_start", map[string]any{"backend": "vz", "version": version, "mem_max_mb": memBytes() / mib})
 	home, _ := os.UserHomeDir()
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	data := envOr("NANOC_DATA", filepath.Join(home, ".nanoc", "data.img"))
@@ -226,8 +229,10 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		break
 	}
 	if dialErr != nil {
+		logEvent(ev, "guest_timeout", map[string]any{"port": waitPort, "error": dialErr.Error()})
 		return fmt.Errorf("guest não respondeu na porta %d: %v", waitPort, dialErr)
 	}
+	logEvent(ev, "guest_ready", map[string]any{"boot_s": int(time.Since(started).Seconds())})
 
 	var ln net.Listener
 	if !noDocker {
@@ -265,6 +270,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			if !stopping.Load() {
 				fmt.Fprintf(os.Stderr, "VM parou inesperadamente (estado %v); daemon saindo\n", st)
 			}
+			logEvent(ev, "vm_stopped", map[string]any{"state": fmt.Sprint(st), "requested": stopping.Load()})
 			ctl.Close()
 			_ = os.Remove(ctlPath)
 			if ln != nil {
@@ -335,6 +341,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				}
 				if req.Cmd == "stop" {
 					fmt.Fprintf(os.Stderr, "%s parada pedida pelo socket de controle\n", time.Now().Format(time.RFC3339))
+					logEvent(ev, "stop_request", peerInfo(c))
 					stopping.Store(true)
 					resp["stopping"] = true
 					if vm.CanRequestStop() {
@@ -386,6 +393,7 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 	go func() {
 		sig := <-stop
 		fmt.Fprintf(os.Stderr, "%s parada por sinal %v\n", time.Now().Format(time.RFC3339), sig)
+		logEvent(ev, "signal", map[string]any{"signal": sig.String()})
 		ctl.Close()
 		if ln == nil {
 			// máquina sem Docker: o loop principal está parado em select{}

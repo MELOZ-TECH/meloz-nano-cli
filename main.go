@@ -71,6 +71,28 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "watch":
+			if err := runWatch(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
+		case "events":
+			n := 30
+			if len(os.Args) >= 3 {
+				fmt.Sscanf(os.Args[2], "%d", &n)
+			}
+			stateDir, _, _ := paths()
+			for _, l := range readEvents(eventsFile(stateDir), n, "") {
+				fmt.Println(l)
+			}
+			return
+		case "mcp":
+			if err := runMCP(os.Stdin, os.Stdout); err != nil {
+				fmt.Fprintln(os.Stderr, "erro:", err)
+				os.Exit(1)
+			}
+			return
 		case "daemon":
 			run := runDaemon
 			if os.Getenv("NANOC_BACKEND") == "krun" {

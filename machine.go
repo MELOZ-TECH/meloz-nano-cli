@@ -179,7 +179,8 @@ func machineStart(name string) error {
 	if err != nil {
 		return err
 	}
-	c := exec.Command(self, "daemon",
+	// o vigia sobe o daemon e registra em events.log como ele saiu
+	c := exec.Command(self, "watch",
 		filepath.Join(assets, "Image"), filepath.Join(assets, "initramfs.cpio.gz"),
 		machinePath(name), dockerSock, machineCtl(name))
 	c.Env = append(os.Environ(),

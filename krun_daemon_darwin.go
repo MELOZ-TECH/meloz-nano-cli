@@ -30,6 +30,8 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 	}
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Dir(ctlPath)
+	logEvent(eventsFile(stateDir), "daemon_start", map[string]any{"backend": "libkrun", "version": version,
+		"mem_max_mb": memBytes() / mib, "mtu": krunMTU()})
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
 	if _, err := os.Stat(modloop); err != nil {
 		// sem modloop o data.img deixaria de ser o vdb que a cmdline aponta
@@ -123,9 +125,13 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 func krunServe(o krunOpts, vn interface {
 	Dial(network, addr string) (net.Conn, error)
 }, noDocker bool, sockPath, ctlPath, pidPath string, stop func(string)) error {
+	ev := eventsFile(filepath.Dir(ctlPath))
+	started := time.Now()
 	if err := krunWaitGuest(o.sockDocker, o.sockControl, noDocker); err != nil {
+		logEvent(ev, "guest_timeout", map[string]any{"error": err.Error()})
 		return err
 	}
+	logEvent(ev, "guest_ready", map[string]any{"boot_s": int(time.Since(started).Seconds())})
 	if c, err := net.DialTimeout("unix", ctlPath, 300*time.Millisecond); err == nil {
 		c.Close()
 		return fmt.Errorf("já existe um daemon em %s", ctlPath)
@@ -196,6 +202,7 @@ func krunServe(o krunOpts, vn interface {
 			case "exec":
 				resp = krunAgent(o.sockControl, map[string]any{"cmd": "exec", "container": req.Container, "argv": req.Argv})
 			case "stop":
+				logEvent(ev, "stop_request", peerInfo(c))
 				resp["stopping"] = true
 				stop("pedida pelo socket de controle")
 			}
