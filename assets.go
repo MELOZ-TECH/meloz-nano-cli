@@ -125,6 +125,8 @@ uso:
   nanoc logs <c>           docker logs no guest
   nanoc bootstrap          baixa kernel/rootfs do release
   nanoc k8s <ação>         enable | disable | status | reset
+  nanoc events [n]         últimos eventos do daemon (paradas, sinais, mortes)
+  nanoc mcp                servidor MCP (stdio) para depurar o nanoc
   nanoc --version          versão
 
   export DOCKER_HOST=unix://$HOME/.nanoc/docker.sock`)
