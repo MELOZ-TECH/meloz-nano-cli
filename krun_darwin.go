@@ -2,8 +2,9 @@
 
 // Backend experimental: sobe o mesmo guest do nanoc com o libkrun (main, API 2.0)
 // em vez do Virtualization.framework, para medir a devolução de memória ao macOS
-// pelo free page reporting em modo Replace. Não tem rede (o libkrun não traz NAT)
-// e não está ligado ao `nanoc up`: roda sozinho com `nanoc krun-boot`.
+// pelo free page reporting em modo Replace. O libkrun não traz NAT: a rede é o
+// gvisor-tap-vsock embutido, ligado ao virtio-net por um socketpair de datagramas.
+// Não está ligado ao `nanoc up`: roda sozinho com `nanoc krun-boot`.
 //
 // Compilar: CGO_CFLAGS=-I<libkrun>/include CGO_LDFLAGS="-L<libkrun>/target/release
 // -Wl,-rpath,<libkrun>/target/release" go build -tags krun, e assinar com
@@ -52,6 +53,8 @@ typedef struct {
 	const char *modloop, *data, *share;
 	const char *sock_docker, *sock_control;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
+	int net_fd;
+	unsigned char mac[6];
 } nanoc_krun_cfg;
 
 // nanoc_krun_run só volta em erro: krun_vmm_run encerra o processo quando o guest desliga
@@ -91,6 +94,14 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	krun_vsock_device_add_unix_port(vs, 2376, KRUN_STR(c->sock_control), true);
 	krun_mmio_device_manager_add(devs, vs);
 
+	// quadros Ethernet crus, um por datagrama (o protocolo "vfkit" do gvisor-tap-vsock)
+	if (c->net_fd >= 0) {
+		KrunNetDevice net;
+		TRY("net", net = krun_net_device_new_unixgram_fd(KRUN_STR("net0"), c->net_fd,
+			KRUN_BYTES(c->mac), 0, 0, &err));
+		krun_mmio_device_manager_add(devs, net);
+	}
+
 	if (c->fpr_mode >= 0) {
 		KrunBalloonDevice bal;
 		TRY("balloon", bal = krun_balloon_device_new(&err));
@@ -127,13 +138,70 @@ static const char *nanoc_krun_error(void) { return nanoc_krun_err; }
 import "C"
 
 import (
+	"context"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
+	"syscall"
 	"unsafe"
+
+	"github.com/containers/gvisor-tap-vsock/pkg/types"
+	"github.com/containers/gvisor-tap-vsock/pkg/virtualnetwork"
 )
+
+// MACs fixos: o guest tem IP estático (nanoc.ip) e o gateway é sempre o .1
+var (
+	krunGuestMAC   = [6]byte{0x5a, 0x94, 0xef, 0xe4, 0x0c, 0xee}
+	krunGatewayMAC = "5a:94:ef:e4:0c:dd"
+)
+
+// hostAlias é o IP pelo qual o guest alcança o 127.0.0.1 do Mac
+const hostAlias = ".254"
+
+// startNetwork sobe a rede virtual na mesma /24 do VZ (o script do guest usa o
+// .1 como gateway) e devolve o fd que vai para o virtio-net do libkrun.
+func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
+	ip := guestIP()
+	prefix := ip[:strings.LastIndex(ip, ".")]
+	vn, err := virtualnetwork.New(&types.Configuration{
+		MTU:               1500,
+		Subnet:            prefix + ".0/24",
+		GatewayIP:         prefix + ".1",
+		GatewayMacAddress: krunGatewayMAC,
+		DHCPStaticLeases:  map[string]string{ip: net.HardwareAddr(krunGuestMAC[:]).String()},
+		NAT:               map[string]string{prefix + hostAlias: "127.0.0.1"},
+		GatewayVirtualIPs: []string{prefix + hostAlias},
+		Protocol:          types.VfkitProtocol,
+	})
+	if err != nil {
+		return nil, -1, err
+	}
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_DGRAM, 0)
+	if err != nil {
+		return nil, -1, err
+	}
+	// o padrão do macOS (2 KB de envio) perde quadros em rajada
+	for _, fd := range fds {
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 1<<20)
+		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4<<20)
+	}
+	f := os.NewFile(uintptr(fds[0]), "gvisor-net")
+	conn, err := net.FileConn(f)
+	f.Close()
+	if err != nil {
+		return nil, -1, err
+	}
+	go func() {
+		if err := vn.AcceptVfkit(context.Background(), conn); err != nil {
+			fmt.Fprintln(os.Stderr, "nanoc krun-boot: rede:", err)
+		}
+	}()
+	return vn, fds[1], nil
+}
 
 // krunBoot: nanoc krun-boot -dir <estado> [-ram MiB] [-fpr replace|default|off]
 // <estado> precisa ter rootfs.erofs; o data.img é criado ali se faltar. Os sockets
@@ -148,6 +216,7 @@ func krunBoot(args []string) error {
 	fpr := fl.String("fpr", "replace", "free page reporting: replace, default ou off")
 	logLevel := fl.Int("log", 2, "nível de log do libkrun (0-5)")
 	noDocker := fl.Bool("nodocker", true, "não sobe o dockerd no guest")
+	noNet := fl.Bool("nonet", false, "sem rede (sem gvisor-tap-vsock)")
 	// caminho de socket unix no macOS tem limite de 104 bytes
 	sockDir := fl.String("sockdir", filepath.Join(home, ".nanoc-krun"), "onde ficam os sockets vsock")
 	if err := fl.Parse(args); err != nil {
@@ -215,6 +284,24 @@ func krunBoot(args []string) error {
 	}
 	if serial {
 		cfg.serial = 1
+	}
+	cfg.net_fd = -1
+	if !*noNet {
+		vn, fd, err := startNetwork()
+		if err != nil {
+			return fmt.Errorf("rede: %w", err)
+		}
+		cfg.net_fd = C.int(fd)
+		for i, b := range krunGuestMAC {
+			cfg.mac[i] = C.uchar(b)
+		}
+		// portas publicadas pelo Docker no guest em 127.0.0.1:<porta>, entrando
+		// pela pilha do gvisor (o IP do guest não existe fora dela)
+		if !*noDocker {
+			pf := newPortForward()
+			pf.dial = func(addr string) (net.Conn, error) { return vn.Dial("tcp", addr) }
+			go pf.run(filepath.Join(*sockDir, "vsock-2375.sock"))
+		}
 	}
 	fmt.Fprintf(os.Stderr, "nanoc krun-boot: ram=%d MiB fpr=%s pid=%d\n", *ram, *fpr, os.Getpid())
 	runtime.LockOSThread()

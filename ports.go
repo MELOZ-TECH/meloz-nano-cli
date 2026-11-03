@@ -18,10 +18,15 @@ type portForward struct {
 	mu        sync.Mutex
 	listeners map[int]net.Listener
 	client    *http.Client
+	// dial abre a conexão com a porta no guest. No VZ o guest tem IP alcançável
+	// do Mac; no libkrun a rede é do gvisor-tap-vsock e só se entra por ela.
+	dial func(addr string) (net.Conn, error)
 }
 
 func newPortForward() *portForward {
-	return &portForward{listeners: map[int]net.Listener{}}
+	return &portForward{listeners: map[int]net.Listener{}, dial: func(addr string) (net.Conn, error) {
+		return net.DialTimeout("tcp", addr, 5*time.Second)
+	}}
 }
 
 // dockerClient: um só cliente para todas as consultas. Um Transport novo por
@@ -112,7 +117,7 @@ func (p *portForward) serve(ln net.Listener, port int) {
 		}
 		go func(hc net.Conn) {
 			defer hc.Close()
-			gc, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", guestIP(), port), 5*time.Second)
+			gc, err := p.dial(fmt.Sprintf("%s:%d", guestIP(), port))
 			if err != nil {
 				return
 			}

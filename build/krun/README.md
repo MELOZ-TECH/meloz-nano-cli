@@ -3,8 +3,16 @@
 `nanoc krun-boot` boots the regular nanoc guest (same kernel, initramfs, modloop
 and rootfs) on [libkrun](https://github.com/containers/libkrun) instead of
 Virtualization.framework. It exists to measure one thing: whether the guest's
-freed memory goes back to macOS. It is not wired into `nanoc up` and has no
-network (libkrun has no built-in NAT).
+freed memory goes back to macOS. It is not wired into `nanoc up`.
+
+libkrun has no built-in NAT, so `krun-boot` embeds
+[gvisor-tap-vsock](https://github.com/containers/gvisor-tap-vsock): a datagram
+socketpair carries raw Ethernet frames between libkrun's virtio-net and the
+userspace network stack. The guest keeps the same static `192.168.64.2`, with
+the gateway at `.1` and the Mac's `127.0.0.1` reachable at `.254`. Ports that
+Docker publishes in the guest are forwarded to `127.0.0.1` on the Mac through
+the gvisor stack, since the guest IP does not exist outside it. `-nonet` turns
+it off.
 
 ## Build
 
@@ -54,8 +62,27 @@ Only `KRUN_FREE_PAGE_REPORTING_MODE_REPLACE` gives the memory back. With
 Virtualization.framework (current nanoc) the memory the guest has touched never
 returns.
 
+## Network (2026-11-02)
+
+`net-test.py` boots with Docker on and checks, from inside the guest unless noted:
+
+| Check | Result |
+|---|---|
+| Address and default route | `192.168.64.2/24` via `.1` |
+| DNS (`nslookup example.com`) | ok |
+| HTTP and HTTPS (`wget`) | ok |
+| Mac's `127.0.0.1` via `.254` | ok |
+| 50 MB download | ok, 57 s (about 7 Mbit/s) |
+| dockerd 28.3.3, `docker pull nginx:alpine` | ok |
+| `docker run -p 8080:80`, then `http://127.0.0.1:8080` on the Mac | ok |
+| A container reaching the internet | ok |
+
+The download is slow. The test runs the VM under `taskpolicy -b` (background
+QoS, to spare an 8 GB Mac) and the virtio-net device has no offloads (features
+0, MTU 1500), so the number is not a ceiling yet.
+
 ## Not done
 
-Network (gvisor-tap-vsock or gvproxy), `nanoc up` integration, Docker in the
-guest (tested with `nanoc.nodocker=1`), long uptime, real container load, and
-shipping the Rust dylib through Homebrew. libkrun 2.0 is not released yet.
+`nanoc up` integration, network throughput (offloads, a larger MTU, no
+background QoS), long uptime, real container load, and shipping the Rust dylib
+through Homebrew. libkrun 2.0 is not released yet.
