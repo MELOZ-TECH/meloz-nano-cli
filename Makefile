@@ -41,9 +41,11 @@ else
 	ln -sf libkrun.2.dylib lib/libkrun.dylib
 	CGO_CFLAGS=-I$(LIBKRUN)/include CGO_LDFLAGS=-L$(CURDIR)/lib GOOS=darwin GOARCH=arm64 \
 	  go build -tags krun -ldflags "$(LDFLAGS) -extldflags -Wl,-rpath,@executable_path/../lib" -o $(BINARY) .
-	tar -czf $(BINARY)-$(VERSION)-darwin-arm64.tar.gz $(BINARY) lib/libkrun.2.dylib $(ENTITLEMENTS) build/krun.entitlements README.md LICENSE
+	mkdir -p licenses && cp $(LIBKRUN)/LICENSE licenses/libkrun-LICENSE
+	tar -czf $(BINARY)-$(VERSION)-darwin-arm64.tar.gz $(BINARY) lib/libkrun.2.dylib licenses/libkrun-LICENSE \
+	  $(ENTITLEMENTS) build/krun.entitlements README.md LICENSE THIRD_PARTY.md
 endif
 	@echo "gerado $(BINARY)-$(VERSION)-darwin-arm64.tar.gz"
 
 clean:
-	rm -f $(BINARY) $(BINARY)-*.tar.gz lib/libkrun.2.dylib lib/libkrun.dylib
+	rm -f $(BINARY) $(BINARY)-*.tar.gz lib/libkrun.2.dylib lib/libkrun.dylib licenses/libkrun-LICENSE

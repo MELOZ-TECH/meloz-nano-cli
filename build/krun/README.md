@@ -56,6 +56,13 @@ git apply ../nano-container/build/krun/libkrun-nanoc-302d447d.patch
 cargo build --release -p libkrun --no-default-features --features blk,net,ffi
 ```
 
+While the pull requests are open, `build/krun/update-libkrun.sh` rebuilds that
+patch: it takes libkrun `main` (or `BASE=<commit>`), merges the PR branches from
+the fork that are still open, skips and reports the ones already merged
+upstream, resolves the conflict they always have in the test list, moves the
+pinned commit when the base changes, and writes the new patch. It does not
+compile; the CI does.
+
 `build/krun/build-libkrun.sh <dir>` does all of that (clone, checkout, patch,
 cargo). It needs several minutes and GBs of RAM: on an 8 GB Mac stop the nanoc VM
 first and set `CARGO_BUILD_JOBS=2`. The CI and the release build it on GitHub's

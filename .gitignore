@@ -6,3 +6,4 @@
 *.sock
 guest/notify/*.ko
 /lib/
+/licenses/
