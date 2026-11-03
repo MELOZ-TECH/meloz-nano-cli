@@ -171,6 +171,30 @@ read the old content for up to 5 s), and `inotifywait` saw exactly one
 MODIFY,CLOSE_WRITE, CREATE, DELETE and ATTRIB, and no echo of its own write. The
 kernel is tainted (out-of-tree, unsigned module), with no oops.
 
+### Longer /Users cache with the notices (2026-11-03)
+
+`cache-notify-bench.sh`, test VM: a container repeats `stat` and `cat` over
+10,000 files, each pass 1 s after the last; then the Mac makes 9 changes (grow,
+same-size rewrite, create, delete, rename old and new name, editor-style save,
+chmod, new folder with a file) and the container polls for up to 3 s.
+
+| /Users cache | notices | stat 10k again (ms) | cat 10k again (ms) | changes seen |
+|---|---|---|---|---|
+| 100 ms | on | 842–1172 | 2665–4979 | 9/9, ≤ 3 ms |
+| 100 ms | off | 817–874 | 2564–2943 | 9/9, ≤ 3 ms |
+| 5 s | on | 249–823 | 2609–16823 | 9/9, ≤ 232 ms |
+| 60 s | on | 210–330 | 2079–3184 | 9/9, ≤ 3 ms |
+| 60 s | off | 251–385 | 2120–2619 | 6/9: rename, editor save and chmod still stale after 3 s |
+
+A long cache makes repeated `stat` about 3 times faster; reading content costs
+the same, since each open still goes to the Mac. With the notices nothing went
+stale. The default is now 10 s when the modloop carries the module (the
+`.modloop-notify` marker next to it matches its sha256) and 100 ms otherwise.
+10 s caps the worst case for what the notices do not cover: processes outside
+containers, the 2 s gap before a new bind mount is watched, and a dropped event.
+A run with the new default: 9/9 changes seen within 3 ms. Numbers on this 8 GB
+Mac are noisy (the 16.8 s read at 5 s is one outlier).
+
 ## Not done
 
 Building `nanoc_notify.ko` natively in CI (the release job runs it under QEMU), TSO (needs libkrun to pass the virtio-net header over the socket), background

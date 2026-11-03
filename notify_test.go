@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -80,5 +83,23 @@ func TestNotifyBatches(t *testing.T) {
 	want := [][]string{{"m /a", "m /b"}, {"m /c"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("%q, quero %q", got, want)
+	}
+}
+
+func TestModloopHasNotify(t *testing.T) {
+	d := t.TempDir()
+	m := filepath.Join(d, "modloop-virt")
+	_ = os.WriteFile(m, []byte("squashfs"), 0o644)
+	if modloopHasNotify(m) {
+		t.Fatal("sem marcador")
+	}
+	sum := sha256.Sum256([]byte("squashfs"))
+	_ = os.WriteFile(filepath.Join(d, ".modloop-notify"), []byte(hex.EncodeToString(sum[:])+"\n"), 0o644)
+	if !modloopHasNotify(m) {
+		t.Fatal("marcador certo")
+	}
+	_ = os.WriteFile(m, []byte("outro modloop"), 0o644)
+	if modloopHasNotify(m) {
+		t.Fatal("modloop trocado depois do marcador")
 	}
 }

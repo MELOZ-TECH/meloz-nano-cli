@@ -193,11 +193,17 @@ const (
 // krunUsersCacheMS: por quanto tempo o guest guarda entradas e atributos de
 // /Users. Medido em 10 mil arquivos: com 0 nada fica velho, mas find e stat
 // levam de 3,6 a 7 s em vez de 0,2 s; com 100 ms a velocidade é a do cache
-// padrão e uma mudança do Mac aparece em até 100 ms. NANOC_KRUN_USERS_CACHE_MS
-// troca o valor.
-func krunUsersCacheMS() int {
+// padrão e uma mudança do Mac aparece em até 100 ms. Com o nanoc_notify no
+// modloop o Mac avisa as mudanças, e 10 s deixam o stat repetido de 10 mil
+// arquivos 3 vezes mais rápido (850 → 300 ms) sem nada velho nos containers;
+// o prazo limita o pior caso a quem os avisos não cobrem (processo fora de
+// container, aviso perdido). NANOC_KRUN_USERS_CACHE_MS troca o valor.
+func krunUsersCacheMS(modloop string) int {
 	if v, err := strconv.Atoi(os.Getenv("NANOC_KRUN_USERS_CACHE_MS")); err == nil && v >= 0 {
 		return v
+	}
+	if os.Getenv("NANOC_KRUN_NOTIFY") != "0" && modloopHasNotify(modloop) {
+		return 10000
 	}
 	return 100
 }
@@ -302,7 +308,7 @@ func krunRun(o krunOpts) error {
 		serial:         1,
 		net_fd:         C.int(o.netFD),
 		net_features:   C.uint(o.netFeatures),
-		users_cache_ms: C.int(krunUsersCacheMS()),
+		users_cache_ms: C.int(krunUsersCacheMS(o.modloop)),
 	}
 	for i, b := range krunGuestMAC {
 		cfg.mac[i] = C.uchar(b)

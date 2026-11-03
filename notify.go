@@ -1,7 +1,10 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -167,4 +170,23 @@ func notifyBatches(lines []string, max int) [][]string {
 		out = append(out, cur)
 	}
 	return out
+}
+
+// modloopHasNotify diz se o modloop é o que o bootstrap empacotou com o
+// nanoc_notify: o marcador .modloop-notify, ao lado, guarda o sha256 dele.
+func modloopHasNotify(modloop string) bool {
+	mark, err := os.ReadFile(filepath.Join(filepath.Dir(modloop), ".modloop-notify"))
+	if err != nil {
+		return false
+	}
+	f, err := os.Open(modloop)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(mark)) == hex.EncodeToString(h.Sum(nil))
 }

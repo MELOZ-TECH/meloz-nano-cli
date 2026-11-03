@@ -30,9 +30,9 @@ func runKrunDaemon(kernel, initrd, _, sockPath, ctlPath string) error {
 	}
 	home, _ := os.UserHomeDir()
 	stateDir := filepath.Dir(ctlPath)
-	logEvent(eventsFile(stateDir), "daemon_start", map[string]any{"backend": "libkrun", "version": version,
-		"mem_max_mb": memBytes() / mib, "mtu": krunMTU()})
 	modloop := envOr("NANOC_MODLOOP", filepath.Join(filepath.Dir(kernel), "modloop-virt"))
+	logEvent(eventsFile(stateDir), "daemon_start", map[string]any{"backend": "libkrun", "version": version,
+		"mem_max_mb": memBytes() / mib, "mtu": krunMTU(), "users_cache_ms": krunUsersCacheMS(modloop)})
 	if _, err := os.Stat(modloop); err != nil {
 		// sem modloop o data.img deixaria de ser o vdb que a cmdline aponta
 		return fmt.Errorf("backend libkrun precisa do modloop: %w", err)
