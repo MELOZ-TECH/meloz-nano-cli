@@ -116,6 +116,10 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 			cmdline += " nanoc.datanew=1"
 		}
 	}
+	rosetta := rosettaShare()
+	if rosetta != nil {
+		cmdline += " nanoc.rosetta=1"
+	}
 	loader, err := vz.NewLinuxBootLoader(kernel,
 		vz.WithCommandLine(cmdline),
 		vz.WithInitrd(initrd),
@@ -185,6 +189,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 				shares = append(shares, usersShare)
 			}
 		}
+	}
+	if rosetta != nil {
+		shares = append(shares, rosetta)
 	}
 	cfg.SetDirectorySharingDevicesVirtualMachineConfiguration(shares)
 
@@ -512,6 +519,28 @@ func guestControlRaw(vm *vz.VirtualMachine, payload map[string]any) map[string]a
 		return out
 	}
 	return resp
+}
+
+// rosettaShare: o Rosetta para Linux da Apple como share virtiofs "rosetta", pela
+// API pública do Virtualization.framework. O guest registra no binfmt o Rosetta
+// no lugar do qemu-x86_64, e imagens amd64 rodam bem mais rápido. Só quando o
+// Rosetta está instalado no Mac (softwareupdate --install-rosetta); NANOC_ROSETTA=0
+// desliga.
+func rosettaShare() vz.DirectorySharingDeviceConfiguration {
+	if os.Getenv("NANOC_ROSETTA") == "0" ||
+		vz.LinuxRosettaDirectoryShareAvailability() != vz.LinuxRosettaAvailabilityInstalled {
+		return nil
+	}
+	fs, err := vz.NewVirtioFileSystemDeviceConfiguration("rosetta")
+	if err != nil {
+		return nil
+	}
+	share, err := vz.NewLinuxRosettaDirectoryShare()
+	if err != nil {
+		return nil
+	}
+	fs.SetDirectoryShare(share)
+	return fs
 }
 
 func newShare(tag, dir string) (vz.DirectorySharingDeviceConfiguration, error) {

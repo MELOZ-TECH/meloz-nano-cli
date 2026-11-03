@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `NANOC_KRUN_NOTIFY=0` turns it off.
 - With the module present, `/Users` on the libkrun backend caches lookups and
   attributes for 10 s (100 ms without it); `NANOC_KRUN_USERS_CACHE_MS` overrides.
+- linux/amd64 images run through Rosetta on the Virtualization.framework backend
+  when it is installed on the Mac (public `VZLinuxRosettaDirectoryShare` API),
+  instead of qemu-user: a CPU-bound test went from 71 s to 8.7 s.
+  `NANOC_ROSETTA=0` keeps qemu.
 - The data disk is a 64 GB sparse file (`NANOC_DISK_GB`), so it only takes the
   space Docker uses. On the libkrun backend an existing smaller disk is grown at
   `up` and the guest extends the mounted ext4 with `resize2fs`, and the daemon

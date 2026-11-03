@@ -63,11 +63,17 @@ else
   fi
 fi
 
-# binfmt: imagens linux/amd64 rodam via qemu-x86_64
-if [ -x /usr/bin/qemu-x86_64 ]; then
-  mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
-  if [ -w /proc/sys/fs/binfmt_misc/register ]; then
-    echo ':qemu-x86_64:M::\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00:\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff:/usr/bin/qemu-x86_64:OCF' > /proc/sys/fs/binfmt_misc/register 2>/dev/null
+# binfmt: imagens linux/amd64 rodam pelo Rosetta quando o host o oferece (backend
+# VZ, nanoc.rosetta=1) e, senão, pelo qemu-x86_64
+X86_MAGIC='\x7f\x45\x4c\x46\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x3e\x00'
+X86_MASK='\xff\xff\xff\xff\xff\xfe\xfe\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+mount -t binfmt_misc binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null
+if [ -w /proc/sys/fs/binfmt_misc/register ]; then
+  if grep -q nanoc.rosetta=1 /proc/cmdline && mkdir -p /mnt/rosetta &&
+     mount -t virtiofs rosetta /mnt/rosetta 2>/dev/null && [ -x /mnt/rosetta/rosetta ]; then
+    echo ":rosetta:M::$X86_MAGIC:$X86_MASK:/mnt/rosetta/rosetta:CF" > /proc/sys/fs/binfmt_misc/register 2>/dev/null
+  elif [ -x /usr/bin/qemu-x86_64 ]; then
+    echo ":qemu-x86_64:M::$X86_MAGIC:$X86_MASK:/usr/bin/qemu-x86_64:OCF" > /proc/sys/fs/binfmt_misc/register 2>/dev/null
   fi
 fi
 
