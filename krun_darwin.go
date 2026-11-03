@@ -53,7 +53,7 @@ typedef struct {
 	const char *modloop, *data, *share, *users;
 	const char *sock_docker, *sock_control;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
-	int net_fd;
+	int net_fd, users_cache_ms;
 	unsigned int net_features;
 	unsigned char mac[6];
 } nanoc_krun_cfg;
@@ -91,6 +91,11 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	if (c->users && *c->users) {
 		KrunFsDevice ufs;
 		TRY("orbusers", ufs = krun_fs_device_new(KRUN_STR("orbusers"), KRUN_STR(c->users), &err));
+		// o Mac edita esses arquivos enquanto o container lê: com o cache padrão
+		// de 5 s, um arquivo que cresceu era lido cortado por até 5 s e um salvo
+		// por rename (como fazem os editores) continuava velho
+		TRY("orbusers cache", krun_fs_device_set_cache_timeouts(ufs, (uint32_t)c->users_cache_ms,
+			(uint32_t)c->users_cache_ms, &err));
 		krun_mmio_device_manager_add(devs, ufs);
 	}
 
@@ -184,6 +189,18 @@ const (
 	virtioNetFGuestTSO4 = 1 << 7
 	virtioNetFGuestTSO6 = 1 << 8
 )
+
+// krunUsersCacheMS: por quanto tempo o guest guarda entradas e atributos de
+// /Users. Medido em 10 mil arquivos: com 0 nada fica velho, mas find e stat
+// levam de 3,6 a 7 s em vez de 0,2 s; com 100 ms a velocidade é a do cache
+// padrão e uma mudança do Mac aparece em até 100 ms. NANOC_KRUN_USERS_CACHE_MS
+// troca o valor.
+func krunUsersCacheMS() int {
+	if v, err := strconv.Atoi(os.Getenv("NANOC_KRUN_USERS_CACHE_MS")); err == nil && v >= 0 {
+		return v
+	}
+	return 100
+}
 
 func krunMTU() int {
 	if v, err := strconv.Atoi(os.Getenv("NANOC_KRUN_MTU")); err == nil && v >= 1280 && v <= 65520 {
@@ -282,9 +299,10 @@ func krunRun(o krunOpts) error {
 		// o hvc0 é virtio e só existe depois do modprobe virtio_mmio; sem console no
 		// início, o runtime do Go do guestinit não acha os fds 0-2 e sai com código 2.
 		// A serial PL011 vem compilada no kernel e vira o console (o último vale).
-		serial:       1,
-		net_fd:       C.int(o.netFD),
-		net_features: C.uint(o.netFeatures),
+		serial:         1,
+		net_fd:         C.int(o.netFD),
+		net_features:   C.uint(o.netFeatures),
+		users_cache_ms: C.int(krunUsersCacheMS()),
 	}
 	for i, b := range krunGuestMAC {
 		cfg.mac[i] = C.uchar(b)
