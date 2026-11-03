@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-11-03
+
+To get the new guest (agent relay, Rosetta, `resize2fs`, MTU) after updating:
+`nanoc down && nanoc bootstrap && nanoc up`. The release binary needs
+`lib/libkrun.2.dylib` next to its `bin/` (Homebrew installs it); keep that folder
+if you unpack the tarball by hand.
+
 ### Added
 
 - Experimental libkrun backend (`-tags krun`, `NANOC_BACKEND=krun nanoc up`): the
