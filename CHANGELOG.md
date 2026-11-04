@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- libkrun backend: `find` and `stat` on /Users are 2–3 times faster. virtio-fs
+  read the owner override xattr of every file it looked up, and on APFS asking
+  for a missing xattr cost more than the `lstat` itself; it now lists the
+  names first (libkrun/libkrun#982, in the bundled patch).
+
 ## [0.18.0] - 2026-11-04
 
 All changes are on the libkrun backend. `NANOC_KRUN_FSHVC=1` needs the new guest
