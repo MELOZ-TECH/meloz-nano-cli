@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Faster boot: on the libkrun backend, from `nanoc up` to Docker answering went
+  from 4.5–5.5 s to 2.1–2.3 s. The guest loads `virtio_rng` first (the kernel
+  took ~1.5 s to gather entropy, and `mkswap` for zram waited for it), loads
+  modules with a few `modprobe -a` calls, and the guest and the daemon check
+  readiness every 100 ms instead of every second. Needs `nanoc bootstrap` for
+  the new guest.
+
 ## [0.18.0] - 2026-11-04
 
 All changes are on the libkrun backend. `NANOC_KRUN_FSHVC=1` needs the new guest
