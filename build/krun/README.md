@@ -261,6 +261,29 @@ Test VM: an 8 GB disk took 7.9 MB on the Mac; after the next `up` the file was
 file to 1.0 GB, and deleting it plus `fstrim` brought it back to 18 MB. On the
 dbolt VM a first `fstrim` gave back 1.2 GB (5.8 → 4.6 GB).
 
+## TSO (2026-11-03, experimental)
+
+With `NANOC_KRUN_TSO=1` the guest gets `HOST_TSO4/6`: it hands 64 KB TCP
+segments to the device even with MTU 1500. libkrun keeps the virtio-net header on
+the socket (`NetFlags::VNET_HDR`, patch `libkrun-net-vnet-hdr`), and the gvisor
+side reads and writes that socket through `vnetConn`, which strips the header on
+read and writes a zeroed one: one syscall per frame, as before. gvisor accepts a
+segment larger than the MSS and doesn't verify received checksums. The other
+direction still follows the guest's MSS: gvisor would have to declare GSO on its
+link for that, which needs a change to gvisor-tap-vsock.
+
+`netbench.sh`, small test VM:
+
+| | MTU 1500 | MTU 1500 + TSO | MTU 65520 (default) |
+|---|---|---|---|
+| container → Mac | 1.6–1.9 Gbit/s | 7.4–8.9 Gbit/s | 6.3–9.4 Gbit/s |
+| Mac → container | 1.9–2.7 Gbit/s | 1.2–3.0 Gbit/s | 2.6–6.3 Gbit/s |
+| daemon CPU, same run | 213 s | 201 s | 179 s |
+
+So MTU 65520 stays the default; TSO is for when the guest has to keep MTU 1500.
+A first version relayed frames through a goroutine pair and halved Mac →
+container (0.6–1.1 Gbit/s); giving gvisor the socket directly fixed that.
+
 ## Not done
 
 Building `nanoc_notify.ko` natively in CI (the release job runs it under QEMU), TSO (needs libkrun to pass the virtio-net header over the socket), background
