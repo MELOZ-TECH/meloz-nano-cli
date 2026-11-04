@@ -28,7 +28,7 @@ it off.
 libkrun `main` at `302d447d` (2.0.0-dev), which has the two macOS fixes this
 backend first needed (libkrun/libkrun#971: `arm,primecell` on the PL011 node,
 without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus four
-patches sent upstream:
+patches sent upstream and one kept in the fork:
 
 - `libkrun-vsock-half-close.patch` (libkrun/libkrun#973): the unix vsock proxy
   turns a half-close from the Mac side into a vsock shutdown instead of a reset,
@@ -44,6 +44,9 @@ patches sent upstream:
   `docker export | docker run -i` froze the whole guest for an hour (RCU stalls,
   a CPU spinning on the virtio console), because one full host socket blocked
   the thread that serves every vsock connection and the console.
+- `virtiofs-vendor-hvc` (fork branch only, since the protocol is nanoc's):
+  virtio-fs answers small requests over a vendor hypercall on the vCPU thread
+  (see "/Users requests over a hypercall").
 
 They touch the same list of end-to-end tests, so they do not apply one after
 another; `libkrun-nanoc-302d447d.patch` is all of them together, as built here
@@ -58,7 +61,7 @@ cargo build --release -p libkrun --no-default-features --features blk,net,ffi
 
 While the pull requests are open, `build/krun/update-libkrun.sh` rebuilds that
 patch: it takes libkrun `main` (or `BASE=<commit>`), merges the PR branches from
-the fork that are still open, skips and reports the ones already merged
+the fork that are still open and the fork-only branches (`FORK`), skips and reports the ones already merged
 upstream, resolves the conflict they always have in the test list, moves the
 pinned commit when the base changes, and writes the new patch. It does not
 compile; the CI does.
@@ -247,6 +250,49 @@ synchronous FUSE requests with an `HVC 0xC600E004` from `virtio_fs_enqueue_req`
 (interrupts masked, at most 3 in and 2 out arguments, 128 pages) and the host
 answers them on the vCPU thread, with no virtqueue, no worker thread and no
 interrupt; anything else falls back to the virtqueue.
+
+## /Users requests over a hypercall (2026-11-03)
+
+Experimental, `NANOC_KRUN_FSHVC=1`. A small synchronous virtio-fs request
+(lookup, getattr, create, unlink) spent most of its time on the virtqueue round
+trip: the queue notification, waking libkrun's worker thread, and the interrupt
+back. OrbStack's guest instead sends file requests with an HVC. nanoc now does
+the same for these requests:
+
+- `guest/notify/virtiofs-hvc.patch` changes the guest's `virtio_fs.c` (6.18.42).
+  With the module parameter `hvc=1`, once the device is online it asks the host
+  for an id by its tag (HVC `0xC6000100`). A non-background request that fits in
+  16 segments is then described in a table in guest memory and sent with HVC
+  `0xC6000101`; the reply is in place when the call returns. If the host refuses
+  it before handling it, the request goes through the virtqueue.
+- `guest/notify/build.sh` builds that `virtiofs.ko` next to `nanoc_notify.ko`;
+  `bootstrap.sh` puts it in the initramfs (the guestinit loads virtiofs from
+  there) and `pack-modloop.sh` in the modloop. Without `hvc=1` it behaves like
+  the stock module, so the VZ backend is unaffected.
+- The daemon adds `virtiofs.hvc=1` to the kernel command line, and the guestinit
+  passes it to `modprobe`, which in the initramfs does not read the command
+  line.
+- libkrun (`virtiofs-vendor-hvc`): hvf answers vendor calls
+  `0xC6000100..=0xC60001FF` through a handler a device registers (without one
+  they return -1 instead of stopping the VM), and virtio-fs answers them with
+  the same server as the queue, on the calling vCPU.
+
+Two things kept it off at first: the query ran before `virtio_device_ready`,
+when libkrun had not created the device yet, and libkrun reports PSCI 0.2, so
+`arm_smccc_1_1_get_conduit()` says there is no conduit even though HVC works.
+
+`lat.py` on /Users, 2-vCPU guest with 1.5 GB (OrbStack from the earlier run):
+
+| | virtqueue | hypercall | OrbStack |
+|---|---|---|---|
+| negative lookup | 51 µs | 12 µs | 12 µs |
+| create file | 317 µs | 141 µs | 62–73 µs |
+| delete file | 197 µs | 104 µs | 29–38 µs |
+
+A 20 MB random file kept its SHA-256 both ways, and 4 processes creating and
+reading 1,200 files in parallel gave no errors or kernel warnings. Create and
+delete are still about twice OrbStack's; what is left is on the Mac side (the
+passthrough's system calls), not in the transport.
 
 ## Data disk (2026-11-03)
 

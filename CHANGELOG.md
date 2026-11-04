@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental `NANOC_KRUN_FSHVC=1` on the libkrun backend: small synchronous
+  requests on /Users (lookup, create, delete) go to the Mac with a hypercall
+  instead of the virtqueue. A negative lookup goes from 51 to 12 µs, creating a
+  file from 317 to 141 µs. Needs `nanoc bootstrap` for the new guest module; see
+  `build/krun/README.md`.
+
 ## [0.17.0] - 2026-11-03
 
 To get the new guest (agent relay, Rosetta, `resize2fs`, MTU) after updating:
