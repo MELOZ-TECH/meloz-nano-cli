@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modules with a few `modprobe -a` calls, and the guest and the daemon check
   readiness every 100 ms instead of every second. Needs `nanoc bootstrap` for
   the new guest.
+- libkrun backend: `find` and `stat` on /Users are 2–3 times faster. virtio-fs
+  read the owner override xattr of every file it looked up, and on APFS asking
+  for a missing xattr cost more than the `lstat` itself; it now lists the
+  names first (libkrun/libkrun#982, in the bundled patch).
 
 ## [0.18.0] - 2026-11-04
 
