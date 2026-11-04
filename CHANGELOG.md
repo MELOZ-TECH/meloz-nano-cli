@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every hour, so space freed in the guest goes back to the Mac. On the libkrun
   backend, deleting a 1 GB volume left `data.img` at 1787 MB on the Mac; one
   `fstrim` (0.19 s) brought it to 745 MB. Needs `nanoc bootstrap`.
+- The guest compacts its memory once, 90 s after boot. The end of the boot left
+  free memory in small pieces that the host never gets back (the libkrun
+  backend reclaims free blocks of 64 KB). On the libkrun backend, a 2 GB guest
+  went from 426–429 to 370–371 MB on the Mac when idle, and from 462–463 to
+  419 MB a minute after a light load, with the same idle CPU. Needs
+  `nanoc bootstrap`.
 
 ## [0.18.0] - 2026-11-04
 
