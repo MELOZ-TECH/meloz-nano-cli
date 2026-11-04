@@ -27,8 +27,8 @@ it off.
 
 libkrun `main` at `302d447d` (2.0.0-dev), which has the two macOS fixes this
 backend first needed (libkrun/libkrun#971: `arm,primecell` on the PL011 node,
-without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus five
-patches sent upstream and three kept in the fork:
+without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus six
+patches sent upstream and two kept in the fork:
 
 - `libkrun-vsock-half-close.patch` (libkrun/libkrun#973): the unix vsock proxy
   turns a half-close from the Mac side into a vsock shutdown instead of a reset,
@@ -52,7 +52,7 @@ patches sent upstream and three kept in the fork:
   (see "/Users requests over a hypercall").
 - `balloon-reclaim-64k` (fork branch only): free guest memory goes back to
   macOS in 64 KiB blocks instead of 2 MiB (see "Memory in 64 KiB blocks").
-- `virtiofs-xattr-list` (fork branch, not yet sent upstream): before reading
+- `virtiofs-xattr-list` (libkrun/libkrun#982): before reading
   the `user.containers.override_stat` owner xattr, virtio-fs lists the file's
   xattr names and reads the value only when the key is there. On APFS a
   `getxattr` of a missing name took 11–22 µs, against ~2 µs for the `lstat`
