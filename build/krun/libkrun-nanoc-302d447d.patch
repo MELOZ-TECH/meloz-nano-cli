@@ -1,5 +1,5 @@
 diff --git a/bindings/libkrun-via-cdylib-weak/ffier-krun.json b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
-index 8b64f3c5..b094b0b1 100644
+index 8b64f3c5..7b55e35f 100644
 --- a/bindings/libkrun-via-cdylib-weak/ffier-krun.json
 +++ b/bindings/libkrun-via-cdylib-weak/ffier-krun.json
 @@ -767,6 +767,39 @@
@@ -42,6 +42,18 @@ index 8b64f3c5..b094b0b1 100644
          }
        ],
        "cfg": "not(any(feature = \"tee\", feature = \"aws-nitro\"))"
+@@ -3022,6 +3055,11 @@
+           "name": "VFKIT",
+           "c_name": "KRUN_NET_FLAGS_VFKIT",
+           "value": 1
++        },
++        {
++          "name": "VNET_HDR",
++          "c_name": "KRUN_NET_FLAGS_VNET_HDR",
++          "value": 2
+         }
+       ],
+       "cfg": "feature = \"net\""
 diff --git a/docs/vm-lifecycle.md b/docs/vm-lifecycle.md
 index bca0370f..8a6e016f 100644
 --- a/docs/vm-lifecycle.md
@@ -56,10 +68,18 @@ index bca0370f..8a6e016f 100644
    - **TSI (Transparent Socket Impersonation)**: Built into `VsockDevice` with `TsiFlags::HIJACK_INET` and port forwarding.
    - **Virtio-net**: `NetDevice` connected via Unix stream or datagram socket (e.g. to `passt` or `gvproxy`).
 diff --git a/include/libkrun.h b/include/libkrun.h
-index 0a1cc112..ad02600e 100644
+index 0a1cc112..10a99a05 100644
 --- a/include/libkrun.h
 +++ b/include/libkrun.h
-@@ -303,6 +303,18 @@ typedef KrunResult (*krun_fs_device_set_fixed_owner_fn)(KrunFsDevice handle, uin
+@@ -193,6 +193,7 @@ typedef void (*krun_free_object_array_fn)(KrunObjectArray a);
+ /* NetFlags ---------------------------------------------------------- */
+ 
+ #define KRUN_NET_FLAGS_VFKIT 1
++#define KRUN_NET_FLAGS_VNET_HDR 2
+ 
+ /* VmmError ---------------------------------------------------------- */
+ 
+@@ -303,6 +304,18 @@ typedef KrunResult (*krun_fs_device_set_fixed_owner_fn)(KrunFsDevice handle, uin
   */
  KrunResult krun_fs_device_set_cache_policy(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
  typedef KrunResult (*krun_fs_device_set_cache_policy_fn)(KrunFsDevice handle, uint32_t policy, KrunError* err_out);
@@ -571,6 +591,212 @@ index efdb4648..168c20a8 100644
          Ok(Self {
              queues,
              queue_evts,
+diff --git a/src/devices/src/virtio/net/device.rs b/src/devices/src/virtio/net/device.rs
+index 9605ccf2..c6352060 100644
+--- a/src/devices/src/virtio/net/device.rs
++++ b/src/devices/src/virtio/net/device.rs
+@@ -72,10 +72,13 @@ pub enum VirtioNetBackend {
+     #[cfg(windows)]
+     UnixstreamFd(RawSocket),
+     UnixstreamPath(PathBuf),
++    /// The fd, and whether frames carry the virtio-net header.
+     #[cfg(unix)]
+-    UnixgramFd(RawFd),
++    UnixgramFd(RawFd, bool),
++    /// The path, whether to send the vfkit magic, and whether frames carry the
++    /// virtio-net header.
+     #[cfg(unix)]
+-    UnixgramPath(PathBuf, bool),
++    UnixgramPath(PathBuf, bool, bool),
+     #[cfg(target_os = "linux")]
+     Tap(String),
+ }
+diff --git a/src/devices/src/virtio/net/unixgram.rs b/src/devices/src/virtio/net/unixgram.rs
+index b984e1e0..369a29b7 100644
+--- a/src/devices/src/virtio/net/unixgram.rs
++++ b/src/devices/src/virtio/net/unixgram.rs
+@@ -35,11 +35,20 @@ const SOCKET_SNDBUF: usize = MAX_BUFFER_SIZE - VNET_HDR_LEN;
+ #[cfg(not(target_os = "macos"))]
+ const SOCKET_SNDBUF: usize = DEFAULT_SOCKET_BUF_SIZE;
+ 
++#[cfg(target_os = "macos")]
++const SOCKET_SNDBUF_VNET_HDR: usize = MAX_BUFFER_SIZE;
++
++#[cfg(not(target_os = "macos"))]
++const SOCKET_SNDBUF_VNET_HDR: usize = DEFAULT_SOCKET_BUF_SIZE;
++
+ const SOCKET_RCVBUF: usize = DEFAULT_SOCKET_BUF_SIZE;
+ 
+ pub struct Unixgram {
+     fd: OwnedFd,
+     retries: u64,
++    /// Frames on the socket start with the virtio-net header, so the peer can
++    /// use and produce segmentation and checksum offload.
++    vnet_hdr: bool,
+ }
+ 
+ impl Unixgram {
+@@ -73,11 +82,26 @@ impl Unixgram {
+             };
+         }
+ 
+-        Self { fd, retries: 0 }
++        Self {
++            fd,
++            retries: 0,
++            vnet_hdr: false,
++        }
++    }
++
++    /// Keep the virtio-net header on the socket instead of stripping it on
++    /// transmit and zero-filling it on receive.
++    pub fn with_vnet_hdr(mut self, vnet_hdr: bool) -> Self {
++        self.vnet_hdr = vnet_hdr;
++        self
+     }
+ 
+     /// Create the backend opening a connection to the userspace network proxy.
+-    pub fn open(path: PathBuf, send_vfkit_magic: bool) -> Result<Self, ConnectError> {
++    pub fn open(
++        path: PathBuf,
++        send_vfkit_magic: bool,
++        vnet_hdr: bool,
++    ) -> Result<Self, ConnectError> {
+         // We cannot create a non-blocking socket on macOS here. This is done later in new().
+         let fd = socket(
+             AddressFamily::Unix,
+@@ -108,7 +132,13 @@ impl Unixgram {
+                 .map_err(ConnectError::SendingMagic)?;
+         }
+ 
+-        if let Err(e) = setsockopt(&fd, sockopt::SndBuf, &SOCKET_SNDBUF) {
++        // With the header, a datagram is the whole buffer.
++        let sndbuf = if vnet_hdr {
++            SOCKET_SNDBUF_VNET_HDR
++        } else {
++            SOCKET_SNDBUF
++        };
++        if let Err(e) = setsockopt(&fd, sockopt::SndBuf, &sndbuf) {
+             log::warn!("Failed to set SO_SNDBUF: {e}");
+         }
+         if let Err(e) = setsockopt(&fd, sockopt::RcvBuf, &SOCKET_RCVBUF) {
+@@ -121,14 +151,19 @@ impl Unixgram {
+             getsockopt(&fd, sockopt::RcvBuf)
+         );
+ 
+-        Ok(Self::new(fd))
++        Ok(Self::new(fd).with_vnet_hdr(vnet_hdr))
+     }
+ }
+ 
+ impl NetBackend for Unixgram {
+     /// Try to read a frame the proxy. If no bytes are available reports ReadError::NothingRead
+     fn read_frame(&mut self, buf: &mut [u8]) -> Result<usize, ReadError> {
+-        let hdr_len = write_virtio_net_hdr(buf);
++        // With vnet_hdr the peer writes the header itself.
++        let hdr_len = if self.vnet_hdr {
++            0
++        } else {
++            write_virtio_net_hdr(buf)
++        };
+         let frame_length = match recv(self.fd.as_raw_fd(), &mut buf[hdr_len..], MsgFlags::empty()) {
+             Ok(f) => f,
+             #[allow(unreachable_patterns)]
+@@ -145,7 +180,8 @@ impl NetBackend for Unixgram {
+ 
+     /// Try to write a frame to the proxy.
+     fn write_frame(&mut self, hdr_len: usize, buf: &mut [u8]) -> Result<(), WriteError> {
+-        let ret = match send(self.fd.as_raw_fd(), &buf[hdr_len..], MsgFlags::empty()) {
++        let start = if self.vnet_hdr { 0 } else { hdr_len };
++        let ret = match send(self.fd.as_raw_fd(), &buf[start..], MsgFlags::empty()) {
+             Ok(ret) => ret,
+             // macOS returns ENOBUFS; Linux returns EAGAIN when the socket buffer is full.
+             #[allow(unreachable_patterns)]
+@@ -187,3 +223,60 @@ impl NetBackend for Unixgram {
+         50
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use nix::sys::socket::socketpair;
++
++    fn pair() -> (OwnedFd, OwnedFd) {
++        socketpair(
++            AddressFamily::Unix,
++            SockType::Datagram,
++            None,
++            SockFlag::empty(),
++        )
++        .unwrap()
++    }
++
++    #[test]
++    fn strips_and_zero_fills_the_header_by_default() {
++        let (ours, peer) = pair();
++        let mut backend = Unixgram::new(ours);
++        let mut frame = [0xaau8; VNET_HDR_LEN + 4];
++        frame[VNET_HDR_LEN..].copy_from_slice(b"eth!");
++        backend.write_frame(VNET_HDR_LEN, &mut frame).unwrap();
++        let mut got = [0u8; 64];
++        let n = recv(peer.as_raw_fd(), &mut got, MsgFlags::empty()).unwrap();
++        assert_eq!(&got[..n], b"eth!");
++
++        send(peer.as_raw_fd(), b"back", MsgFlags::empty()).unwrap();
++        let mut buf = [0xffu8; 64];
++        let n = backend.read_frame(&mut buf).unwrap();
++        assert_eq!(n, VNET_HDR_LEN + 4);
++        assert!(buf[..VNET_HDR_LEN].iter().all(|b| *b == 0));
++        assert_eq!(&buf[VNET_HDR_LEN..n], b"back");
++    }
++
++    #[test]
++    fn keeps_the_header_with_vnet_hdr() {
++        let (ours, peer) = pair();
++        let mut backend = Unixgram::new(ours).with_vnet_hdr(true);
++        let mut frame = [0u8; VNET_HDR_LEN + 4];
++        frame[0] = 1; // VIRTIO_NET_HDR_F_NEEDS_CSUM
++        frame[1] = 1; // VIRTIO_NET_HDR_GSO_TCPV4
++        frame[VNET_HDR_LEN..].copy_from_slice(b"eth!");
++        backend.write_frame(VNET_HDR_LEN, &mut frame).unwrap();
++        let mut got = [0u8; 64];
++        let n = recv(peer.as_raw_fd(), &mut got, MsgFlags::empty()).unwrap();
++        assert_eq!(&got[..n], &frame[..]);
++
++        let mut reply = [0u8; VNET_HDR_LEN + 4];
++        reply[1] = 4; // VIRTIO_NET_HDR_GSO_TCPV6
++        reply[VNET_HDR_LEN..].copy_from_slice(b"back");
++        send(peer.as_raw_fd(), &reply, MsgFlags::empty()).unwrap();
++        let mut buf = [0xffu8; 64];
++        let n = backend.read_frame(&mut buf).unwrap();
++        assert_eq!(&buf[..n], &reply[..]);
++    }
++}
+diff --git a/src/devices/src/virtio/net/worker/unix.rs b/src/devices/src/virtio/net/worker/unix.rs
+index 6091f60d..8496f772 100644
+--- a/src/devices/src/virtio/net/worker/unix.rs
++++ b/src/devices/src/virtio/net/worker/unix.rs
+@@ -56,14 +56,15 @@ impl NetWorker {
+             VirtioNetBackend::UnixstreamPath(path) => {
+                 Box::new(Unixstream::open(path)?) as Box<dyn NetBackend + Send>
+             }
+-            VirtioNetBackend::UnixgramFd(fd) => {
++            VirtioNetBackend::UnixgramFd(fd, vnet_hdr) => {
+                 // SAFETY: we need to trust that the library user has configured
+                 // the backend with a healthy file descriptor.
+                 let owned_fd = unsafe { OwnedFd::from_raw_fd(fd) };
+-                Box::new(Unixgram::new(owned_fd)) as Box<dyn NetBackend + Send>
++                Box::new(Unixgram::new(owned_fd).with_vnet_hdr(vnet_hdr))
++                    as Box<dyn NetBackend + Send>
+             }
+-            VirtioNetBackend::UnixgramPath(path, vfkit_magic) => {
+-                Box::new(Unixgram::open(path, vfkit_magic)?) as Box<dyn NetBackend + Send>
++            VirtioNetBackend::UnixgramPath(path, vfkit_magic, vnet_hdr) => {
++                Box::new(Unixgram::open(path, vfkit_magic, vnet_hdr)?) as Box<dyn NetBackend + Send>
+             }
+             #[cfg(target_os = "linux")]
+             VirtioNetBackend::Tap(tap_name) => {
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/mod.rs b/src/devices/src/virtio/vsock/unix_proxy/mod.rs
 index 15818d18..321b6150 100644
 --- a/src/devices/src/virtio/vsock/unix_proxy/mod.rs
@@ -1165,7 +1391,7 @@ index 461f76c5..3ba3d134 100644
          }
      }
 diff --git a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
-index 6b050fd4..21d4e353 100644
+index 6b050fd4..2a79fb3e 100644
 --- a/src/libkrun/src/api/device_builders.rs
 +++ b/src/libkrun/src/api/device_builders.rs
 @@ -730,6 +730,28 @@ impl<'a> FsDevice<'a> {
@@ -1197,6 +1423,46 @@ index 6b050fd4..21d4e353 100644
  }
  
  #[cfg(not(any(feature = "tee", feature = "aws-nitro")))]
+@@ -1658,6 +1680,11 @@ export_bitflags! {
+         pub struct NetFlags: u32 {
+             /// Send the vfkit magic handshake on a unixgram socket.
+             const VFKIT = 1;
++            /// Keep the 12-byte virtio-net header (`virtio_net_hdr_v1`) in front of
++            /// each frame on a unixgram socket, instead of stripping it on transmit and
++            /// zero-filling it on receive, so the peer can handle segmentation and
++            /// checksum offload (`VIRTIO_NET_F_HOST_TSO4` and friends).
++            const VNET_HDR = 2;
+         }
+     }
+ }
+@@ -1683,7 +1710,11 @@ impl NetDevice {
+         use devices::virtio::net::device::VirtioNetBackend;
+         Self::new_inner(
+             id,
+-            VirtioNetBackend::UnixgramPath(PathBuf::from(path), flags.contains(NetFlags::VFKIT)),
++            VirtioNetBackend::UnixgramPath(
++                PathBuf::from(path),
++                flags.contains(NetFlags::VFKIT),
++                flags.contains(NetFlags::VNET_HDR),
++            ),
+             mac,
+             features,
+         )
+@@ -1700,10 +1731,12 @@ impl NetDevice {
+         flags: NetFlags,
+     ) -> Result<Self, VmmError> {
+         use devices::virtio::net::device::VirtioNetBackend;
+-        let _ = flags;
+         Self::new_inner(
+             id,
+-            VirtioNetBackend::UnixgramFd(std::os::fd::IntoRawFd::into_raw_fd(fd)),
++            VirtioNetBackend::UnixgramFd(
++                std::os::fd::IntoRawFd::into_raw_fd(fd),
++                flags.contains(NetFlags::VNET_HDR),
++            ),
+             mac,
+             features,
+         )
 diff --git a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
 index bb1f8e30..f8c7e029 100644
 --- a/src/libkrun/src/vmm/builder.rs

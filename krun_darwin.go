@@ -54,7 +54,7 @@ typedef struct {
 	const char *sock_docker, *sock_control, *sock_relay;
 	int cpus, ram_mib, fpr_mode, log_level, serial;
 	int net_fd, users_cache_ms;
-	unsigned int net_features;
+	unsigned int net_features, net_flags;
 	unsigned char mac[6];
 } nanoc_krun_cfg;
 
@@ -111,7 +111,7 @@ static int nanoc_krun_run(nanoc_krun_cfg *c) {
 	if (c->net_fd >= 0) {
 		KrunNetDevice net;
 		TRY("net", net = krun_net_device_new_unixgram_fd(KRUN_STR("net0"), c->net_fd,
-			KRUN_BYTES(c->mac), c->net_features, 0, &err));
+			KRUN_BYTES(c->mac), c->net_features, c->net_flags, &err));
 		krun_mmio_device_manager_add(devs, net);
 	}
 
@@ -160,7 +160,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"github.com/containers/gvisor-tap-vsock/pkg/types"
@@ -179,8 +181,8 @@ const hostAlias = ".254"
 // startNetwork sobe a rede virtual na mesma /24 do VZ (o script do guest usa o
 // .1 como gateway) e devolve o fd que vai para o virtio-net do libkrun.
 // Quadros de até 64 KB entre o guest e o gvisor, como o OrbStack (MTU 65535 no
-// VMM dele): com 1500, a rede ficava 20 a 300 vezes abaixo da do VZ. O libkrun
-// não leva o cabeçalho virtio-net pelo socket, então não há TSO; em troca a
+// VMM dele): com 1500, a rede ficava 20 a 300 vezes abaixo da do VZ. Sem
+// NANOC_KRUN_TSO o libkrun não leva o cabeçalho virtio-net pelo socket; em troca a
 // placa promete aceitar pacotes grandes (GUEST_TSO4/6, que faz o Linux alocar
 // buffers de 64 KB) e não exige checksum na saída (CSUM): o gvisor-tap-vsock não
 // confere o checksum do que recebe. NANOC_KRUN_MTU troca o valor (1500 desliga).
@@ -189,7 +191,28 @@ const (
 	virtioNetFGuestCsum = 1 << 1
 	virtioNetFGuestTSO4 = 1 << 7
 	virtioNetFGuestTSO6 = 1 << 8
+	virtioNetFHostTSO4  = 1 << 11
+	virtioNetFHostTSO6  = 1 << 12
+
+	// krun_net_device_new_unixgram_fd: o cabeçalho virtio-net vai junto de cada
+	// quadro no socket (NetFlags::VNET_HDR, patch libkrun-net-vnet-hdr)
+	krunNetFlagVnetHdr = 2
 )
+
+// krunTSO (NANOC_KRUN_TSO=1, experimental): o guest manda segmentos TCP de até
+// 64 KB mesmo com MTU 1500 (HOST_TSO4/6) e o repassador entre o libkrun e o gvisor
+// tira o cabeçalho virtio-net antes de entregar. O gvisor aceita segmento maior
+// que o MSS e não confere checksum do que recebe. No sentido contrário o gvisor
+// segue o MSS do guest: para TSO nos dois sentidos o link dele teria de declarar
+// GSO, o que exige mudar o gvisor-tap-vsock.
+func krunTSO() bool { return os.Getenv("NANOC_KRUN_TSO") == "1" }
+
+func krunNetFlags() uint32 {
+	if krunTSO() {
+		return krunNetFlagVnetHdr
+	}
+	return 0
+}
 
 // krunUsersCacheMS: por quanto tempo o guest guarda entradas e atributos de
 // /Users. Medido em 10 mil arquivos: com 0 nada fica velho, mas find e stat
@@ -217,10 +240,14 @@ func krunMTU() int {
 }
 
 func krunNetFeatures() uint32 {
-	if krunMTU() <= 1500 {
-		return 0
+	f := uint32(0)
+	if krunMTU() > 1500 {
+		f |= virtioNetFCsum | virtioNetFGuestCsum | virtioNetFGuestTSO4 | virtioNetFGuestTSO6
 	}
-	return virtioNetFCsum | virtioNetFGuestCsum | virtioNetFGuestTSO4 | virtioNetFGuestTSO6
+	if krunTSO() {
+		f |= virtioNetFCsum | virtioNetFHostTSO4 | virtioNetFHostTSO6
+	}
+	return f
 }
 
 func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
@@ -248,18 +275,91 @@ func startNetwork() (*virtualnetwork.VirtualNetwork, int, error) {
 		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, 2<<20)
 		_ = syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4<<20)
 	}
-	f := os.NewFile(uintptr(fds[0]), "gvisor-net")
-	conn, err := net.FileConn(f)
-	f.Close()
-	if err != nil {
-		return nil, -1, err
+	var gconn net.Conn
+	if krunTSO() {
+		// o gvisor lê e escreve direto no socket do libkrun, que leva o cabeçalho
+		// virtio-net: vnetConn o tira na leitura e põe um zerado na escrita
+		gconn = &vnetConn{fd: fds[0]}
+	} else {
+		f := os.NewFile(uintptr(fds[0]), "gvisor-net")
+		conn, err := net.FileConn(f)
+		f.Close()
+		if err != nil {
+			return nil, -1, err
+		}
+		gconn = conn
 	}
 	go func() {
-		if err := vn.AcceptVfkit(context.Background(), conn); err != nil {
+		if err := vn.AcceptVfkit(context.Background(), gconn); err != nil {
 			fmt.Fprintln(os.Stderr, "nanoc krun-boot: rede:", err)
 		}
 	}()
 	return vn, fds[1], nil
+}
+
+// vnetConn é o lado do gvisor de um socketpair cujo outro lado o libkrun usa com
+// NetFlags::VNET_HDR: cada datagrama começa com o cabeçalho virtio-net de 12
+// bytes. O gvisor só precisa de Read e Write; o resto da interface é vazio.
+type vnetConn struct {
+	fd   int
+	rmu  sync.Mutex
+	rbuf []byte
+	wmu  sync.Mutex
+	wbuf []byte
+}
+
+const vnetHdrLen = 12
+
+func (c *vnetConn) Read(b []byte) (int, error) {
+	c.rmu.Lock()
+	defer c.rmu.Unlock()
+	if c.rbuf == nil {
+		c.rbuf = make([]byte, 128<<10)
+	}
+	for {
+		n, err := syscall.Read(c.fd, c.rbuf)
+		if err == syscall.EINTR {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if n <= vnetHdrLen {
+			continue
+		}
+		return copy(b, c.rbuf[vnetHdrLen:n]), nil
+	}
+}
+
+func (c *vnetConn) Write(b []byte) (int, error) {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	if len(c.wbuf) < vnetHdrLen+len(b) {
+		c.wbuf = make([]byte, vnetHdrLen+max(len(b), 64<<10))
+	}
+	clear(c.wbuf[:vnetHdrLen])
+	copy(c.wbuf[vnetHdrLen:], b)
+	writeAll(c.fd, c.wbuf[:vnetHdrLen+len(b)])
+	return len(b), nil
+}
+
+func (c *vnetConn) Close() error                     { return syscall.Close(c.fd) }
+func (c *vnetConn) LocalAddr() net.Addr              { return &net.UnixAddr{Net: "unixgram"} }
+func (c *vnetConn) RemoteAddr() net.Addr             { return &net.UnixAddr{Net: "unixgram"} }
+func (c *vnetConn) SetDeadline(time.Time) error      { return nil }
+func (c *vnetConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *vnetConn) SetWriteDeadline(time.Time) error { return nil }
+
+// writeAll manda um datagrama, esperando quando o buffer do socket está cheio.
+func writeAll(fd int, b []byte) {
+	for {
+		_, err := syscall.Write(fd, b)
+		if err == syscall.ENOBUFS || err == syscall.EAGAIN || err == syscall.EINTR {
+			time.Sleep(5 * time.Microsecond)
+			continue
+		}
+		return
+	}
 }
 
 // krunOpts: o que muda entre o `krun-boot` de teste e o daemon
@@ -310,6 +410,7 @@ func krunRun(o krunOpts) error {
 		serial:         1,
 		net_fd:         C.int(o.netFD),
 		net_features:   C.uint(o.netFeatures),
+		net_flags:      C.uint(krunNetFlags()),
 		users_cache_ms: C.int(krunUsersCacheMS(o.modloop)),
 	}
 	for i, b := range krunGuestMAC {
