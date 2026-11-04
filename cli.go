@@ -162,12 +162,12 @@ func cli(cmd string) error {
 
 // waitReady espera o daemon responder ao status por até dois minutos.
 func waitReady(stateDir, docker string) error {
-	for i := 0; i < 120; i++ {
+	for deadline := time.Now().Add(2 * time.Minute); time.Now().Before(deadline); {
 		if _, err := ctlRequest("status", time.Second); err == nil {
 			fmt.Printf("nanoc: pronto → DOCKER_HOST=unix://%s\n", docker)
 			return nil
 		}
-		time.Sleep(time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
 	return fmt.Errorf("daemon não respondeu; veja %s/daemon.log", stateDir)
 }
