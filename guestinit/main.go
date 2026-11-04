@@ -40,8 +40,25 @@ func modprobe(mod string) {
 		fmt.Fprintf(os.Stderr, "guestinit: modprobe %s: %v %s\n", mod, err, strings.TrimSpace(string(out)))
 		return
 	}
-	if mod == "virtiofs" || mod == "ext4" {
+	if mod == "virtiofs" {
 		fmt.Printf("guestinit: módulo %s carregado\n", mod)
+	}
+}
+
+// modprobeAll carrega vários módulos com um modprobe só. Cada execução do kmod lê
+// de novo os índices de módulos, e um modprobe por módulo somava boa parte do
+// boot. Com -a o kmod segue para os outros quando um falha.
+func modprobeAll(mods ...string) {
+	out, err := exec.Command("/sbin/modprobe", append([]string{"-a"}, mods...)...).CombinedOutput()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "guestinit: modprobe -a: %v %s\n", err, strings.TrimSpace(string(out)))
+	}
+	for _, m := range mods {
+		if m == "ext4" {
+			if _, err := os.Stat("/sys/module/ext4"); err == nil {
+				fmt.Printf("guestinit: módulo %s carregado\n", m)
+			}
+		}
 	}
 }
 
@@ -78,10 +95,12 @@ func main() {
 	mount("devtmpfs", "/dev", "devtmpfs", 0, "")
 
 	// virtio_mmio: o backend experimental com libkrun usa virtio-mmio; no VZ (PCI)
-	// o módulo carrega sem achar dispositivo
-	for _, m := range []string{"squashfs", "virtio_mmio", "virtiofs", "virtio_net", "virtio_pci", "virtio_blk", "overlay", "loop"} {
-		modprobe(m)
-	}
+	// o módulo carrega sem achar dispositivo. virtio_rng logo no começo: sem ele o
+	// kernel leva ~1,5 s para juntar entropia, e o mkswap do zram e o dockerd
+	// esperam por ela.
+	modprobeAll("squashfs", "virtio_mmio", "virtio_pci", "virtio_rng")
+	modprobe("virtiofs")
+	modprobeAll("virtio_net", "virtio_blk", "overlay", "loop")
 
 	// módulos: o initramfs do Alpine só traz o necessário para chegar aqui; o resto
 	// vem do modloop, montado por cima de /lib/modules/<versão>
@@ -95,7 +114,8 @@ func main() {
 			}
 		}
 	}
-	for _, m := range []string{"virtiofs", "virtio_net", "virtio_pci", "virtio_blk",
+	modprobe("virtiofs")
+	modprobeAll("virtio_net", "virtio_pci", "virtio_blk",
 		"vsock", "vmw_vsock_virtio_transport", "vmw_vsock_virtio_transport_common",
 		"virtio_balloon",
 		"loop", "overlay", "vxlan", "udp_tunnel", "ip6_udp_tunnel",
@@ -104,9 +124,7 @@ func main() {
 		"nft_chain_nat", "nft_compat", "ip_tables", "x_tables",
 		"iptable_nat", "iptable_filter", "xt_nat", "xt_MASQUERADE",
 		"xt_conntrack", "xt_addrtype", "xt_comment", "xt_mark",
-		"xt_multiport", "xt_tcpudp"} {
-		modprobe(m)
-	}
+		"xt_multiport", "xt_tcpudp")
 
 	// share de dados: rootfs.erofs + data.img ficam no host
 	_ = os.MkdirAll("/users", 0o755)

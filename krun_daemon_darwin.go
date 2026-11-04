@@ -246,8 +246,9 @@ func krunTrim(agentControl string) {
 // host antes de o guest escutar e fecha sem dados, então conectar não basta.
 func krunWaitGuest(agentDocker, agentControl string, noDocker bool) error {
 	cl := dockerClient(agentDocker)
-	for i := 0; i < 120; i++ {
-		time.Sleep(time.Second)
+	// pergunta a cada 0,1 s: de 1 em 1 s o boot arredondava para o segundo seguinte
+	for deadline := time.Now().Add(120 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
 		if noDocker {
 			if r := krunAgent(agentControl, map[string]any{"cmd": "run", "argv": []string{"true"}}); r["ok"] == true {
 				return nil
