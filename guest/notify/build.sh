@@ -1,5 +1,6 @@
 #!/bin/sh
-# Compila nanoc_notify.ko para o kernel do modloop (Alpine linux-virt) num container
+# Compila nanoc_notify.ko e o virtiofs.ko com o caminho por hypercall
+# (virtiofs-hvc.patch) para o kernel do modloop (Alpine linux-virt) num container
 # alpine arm64. O módulo só carrega se a struct module e o vermagic baterem com o
 # kernel. Caminho rápido: linux-virt-dev da mesma versão, se o repositório ainda o
 # tiver. Senão: fonte exato do kernel.org, config do aports no commit da versão,
@@ -22,13 +23,22 @@ case $KVER in
 esac
 echo "kernel do modloop: $UNAME"
 docker volume create nanoc-kbuild >/dev/null
-tar -C "$DIR" -cf - nanoc_notify.c Kbuild | docker run --rm -i ${PLATFORM:+--platform "$PLATFORM"} -v nanoc-kbuild:/k alpine:3.23 sh -ec "
+tar -C "$DIR" -cf - nanoc_notify.c Kbuild virtiofs-hvc.patch | docker run --rm -i ${PLATFORM:+--platform "$PLATFORM"} -v nanoc-kbuild:/k alpine:3.23 sh -ec "
 mkdir /mod && tar -xf - -C /mod
 exec 3>&1 1>&2
-apk add -q build-base elfutils-dev >/dev/null
+apk add -q build-base elfutils-dev curl patch >/dev/null
+# virtiofs.ko: o virtio_fs.c da mesma versão, com o patch, fora da árvore
+mkdir /vfs && cd /vfs
+for f in virtio_fs.c fuse_i.h fuse_dev_i.h; do
+  curl -fsSL https://raw.githubusercontent.com/gregkh/linux/v$KVER/fs/fuse/\$f -o \$f
+done
+patch -s -p3 < /mod/virtiofs-hvc.patch
+printf 'obj-m := virtiofs.o\nvirtiofs-y := virtio_fs.o\n' > Kbuild
 if apk add -q linux-virt-dev=$KVER-$REL >/dev/null 2>&1; then
   make -s -C /usr/src/linux-headers-$UNAME M=/mod modules
-  cat /mod/nanoc_notify.ko >&3
+  make -s -C /usr/src/linux-headers-$UNAME M=/vfs modules
+  cp /vfs/virtiofs.ko /mod/
+  tar -C /mod -cf - nanoc_notify.ko virtiofs.ko >&3
   exit 0
 fi
 [ -n '$APORTS' ] || { echo 'linux-virt-dev $KVER fora do repositório e sem commit do aports para $KVER em build.sh'; exit 1; }
@@ -42,9 +52,14 @@ curl -fsSL https://raw.githubusercontent.com/alpinelinux/aports/$APORTS/main/lin
 make -s olddefconfig
 make -s LOCALVERSION=$LOCALV -j\$(nproc) modules_prepare
 make -s LOCALVERSION=$LOCALV M=/mod KBUILD_MODPOST_WARN=1 modules 2>&1 | grep -v 'undefined!' || true
-cat /mod/nanoc_notify.ko >&3
-" > "$DIR/nanoc_notify.ko.tmp"
-mv "$DIR/nanoc_notify.ko.tmp" "$DIR/nanoc_notify.ko"
-V=$(LC_ALL=C strings "$DIR/nanoc_notify.ko" | sed -n 's/^vermagic=\([^ ]*\).*/\1/p')
-[ "$V" = "$UNAME" ] || { echo "vermagic $V não bate com $UNAME"; exit 1; }
-echo "ok nanoc_notify.ko ($V)"
+make -s LOCALVERSION=$LOCALV M=/vfs KBUILD_MODPOST_WARN=1 modules 2>&1 | grep -v 'undefined!' || true
+cp /vfs/virtiofs.ko /mod/
+tar -C /mod -cf - nanoc_notify.ko virtiofs.ko >&3
+" > "$DIR/modules.tar.tmp"
+tar -xf "$DIR/modules.tar.tmp" -C "$DIR"
+rm "$DIR/modules.tar.tmp"
+for ko in nanoc_notify.ko virtiofs.ko; do
+  V=$(LC_ALL=C strings "$DIR/$ko" | sed -n 's/^vermagic=\([^ ]*\).*/\1/p')
+  [ "$V" = "$UNAME" ] || { echo "$ko: vermagic $V não bate com $UNAME"; exit 1; }
+  echo "ok $ko ($V)"
+done

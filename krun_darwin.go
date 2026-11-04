@@ -434,6 +434,13 @@ func krunCmdline(created, noDocker bool) string {
 	if mtu := krunMTU(); mtu > 1500 {
 		cmdline += " nanoc.mtu=" + strconv.Itoa(mtu)
 	}
+	// NANOC_KRUN_FSHVC=1 (experimental): o virtiofs do guest manda os pedidos
+	// pequenos e síncronos por hypercall, que o libkrun do nanoc atende na vCPU
+	// (guest/notify/virtiofs-hvc.patch); sem o patch no libkrun, a hypercall
+	// derrubaria a VM, por isso só com a biblioteca do nanoc
+	if os.Getenv("NANOC_KRUN_FSHVC") == "1" {
+		cmdline += " virtiofs.hvc=1"
+	}
 	return cmdline + " console=ttyAMA0"
 }
 

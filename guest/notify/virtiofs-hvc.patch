@@ -1,0 +1,150 @@
+--- a/fs/fuse/virtio_fs.c
++++ b/fs/fuse/virtio_fs.c
+@@ -19,6 +19,7 @@
+ #include <linux/highmem.h>
+ #include <linux/cleanup.h>
+ #include <linux/uio.h>
++#include <linux/arm-smccc.h>
+ #include "fuse_i.h"
+ #include "fuse_dev_i.h"
+ 
+@@ -58,6 +59,7 @@
+ 	struct completion in_flight_zero; /* No inflight requests */
+ 	struct kobject *kobj;
+ 	char name[VQ_NAME_LEN];
++	long hvc_id;		/* device id for the hypercall path, or -1 */
+ } ____cacheline_aligned_in_smp;
+ 
+ /* A virtio-fs device instance */
+@@ -759,9 +761,85 @@
+ }
+ 
+ /* Work function for request completion */
+-static void virtio_fs_request_complete(struct fuse_req *req,
+-				       struct virtio_fs_vq *fsvq)
++/*
++ * Hypercall path (nanoc on libkrun): a small synchronous request is described in
++ * guest memory and answered by the host on the calling vCPU, without the
++ * virtqueue round trip. Only used when the host answers the query for this
++ * device's tag, and only with hvc=1, since an unknown hypercall may stop a host
++ * that doesn't implement it.
++ */
++static bool hvc;
++module_param(hvc, bool, 0444);
++MODULE_PARM_DESC(hvc, "Send small synchronous requests through a hypercall (nanoc/libkrun)");
++
++#define VIRTIO_FS_HVC_QUERY	0xC6000100
++#define VIRTIO_FS_HVC_REQUEST	0xC6000101
++#define VIRTIO_FS_HVC_MAX_SEGS	16
++
++struct virtio_fs_hvc_seg {
++	u64 addr;
++	u32 len;
++	u32 pad;
++};
++
++struct virtio_fs_hvc_table {
++	u32 n_out;
++	u32 n_in;
++	struct virtio_fs_hvc_seg segs[VIRTIO_FS_HVC_MAX_SEGS];
++};
++
++static long virtio_fs_hvc_query(const char *tag)
+ {
++	struct arm_smccc_res res;
++
++	/*
++	 * hvc=1 is the opt-in: libkrun reports PSCI 0.2, so the SMCCC 1.1 conduit
++	 * query says none even though HVC calls reach the host.
++	 */
++	if (!hvc)
++		return -1;
++	arm_smccc_1_1_hvc(VIRTIO_FS_HVC_QUERY, virt_to_phys(tag), &res);
++	return (long)res.a0 < 0 ? -1 : (long)res.a0;
++}
++
++static void virtio_fs_request_finish(struct fuse_req *req);
++
++/* Returns true when the hypercall answered the request and it was ended. */
++static bool virtio_fs_hvc_send(struct virtio_fs_vq *fsvq, struct fuse_req *req,
++			       struct scatterlist *sg, unsigned int out_sgs,
++			       unsigned int in_sgs, gfp_t gfp)
++{
++	struct virtio_fs_hvc_table *t;
++	struct arm_smccc_res res;
++	unsigned int i;
++
++	if (fsvq->hvc_id < 0 || test_bit(FR_BACKGROUND, &req->flags) ||
++	    out_sgs + in_sgs > VIRTIO_FS_HVC_MAX_SEGS)
++		return false;
++
++	t = kmalloc(sizeof(*t), gfp);
++	if (!t)
++		return false;
++	t->n_out = out_sgs;
++	t->n_in = in_sgs;
++	for (i = 0; i < out_sgs + in_sgs; i++) {
++		t->segs[i].addr = sg_phys(&sg[i]);
++		t->segs[i].len = sg[i].length;
++		t->segs[i].pad = 0;
++	}
++	arm_smccc_1_1_hvc(VIRTIO_FS_HVC_REQUEST, fsvq->hvc_id, virt_to_phys(t), &res);
++	kfree(t);
++	/* refused before the host touched the request: use the virtqueue */
++	if ((long)res.a0 < 0)
++		return false;
++
++	/* the reply is in place, as when the device returns the buffers */
++	virtio_fs_request_finish(req);
++	return true;
++}
++
++static void virtio_fs_request_finish(struct fuse_req *req)
++{
+ 	struct fuse_args *args;
+ 	struct fuse_args_pages *ap;
+ 	unsigned int len, i, thislen;
+@@ -793,6 +871,12 @@
+ 	clear_bit(FR_SENT, &req->flags);
+ 
+ 	fuse_request_end(req);
++}
++
++static void virtio_fs_request_complete(struct fuse_req *req,
++				       struct virtio_fs_vq *fsvq)
++{
++	virtio_fs_request_finish(req);
+ 	spin_lock(&fsvq->lock);
+ 	dec_in_flight_req(fsvq);
+ 	spin_unlock(&fsvq->lock);
+@@ -1145,6 +1229,17 @@
+ 	 */
+ 	virtio_device_ready(vdev);
+ 
++	/* the host knows the device once it is online */
++	{
++		long id = virtio_fs_hvc_query(fs->tag);
++		unsigned int i;
++
++		for (i = 0; i < fs->nvqs; i++)
++			fs->vqs[i].hvc_id = id;
++		if (id >= 0)
++			pr_info("virtio-fs: %s: requests through the hypercall\n", fs->tag);
++	}
++
+ 	ret = virtio_fs_add_instance(vdev, fs);
+ 	if (ret < 0)
+ 		goto out_vqs;
+@@ -1421,6 +1516,12 @@
+ 	}
+ 
+ 	WARN_ON(out_sgs + in_sgs != total_sgs);
++
++	/* small synchronous request: answered by the host right away */
++	if (!in_flight && virtio_fs_hvc_send(fsvq, req, sg, out_sgs, in_sgs, gfp)) {
++		ret = 0;
++		goto out;
++	}
+ 
+ 	for (i = 0; i < total_sgs; i++)
+ 		sgs[i] = &sg[i];

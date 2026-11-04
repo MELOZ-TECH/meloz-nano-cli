@@ -28,7 +28,14 @@ func mount(src, dst, fstype string, flags uintptr, data string) error {
 }
 
 func modprobe(mod string) {
-	out, err := exec.Command("/sbin/modprobe", mod).CombinedOutput()
+	args := []string{mod}
+	// o modprobe do initramfs não lê os parâmetros da linha de comando do kernel
+	if mod == "virtiofs" {
+		if b, err := os.ReadFile("/proc/cmdline"); err == nil && strings.Contains(" "+string(b)+" ", " virtiofs.hvc=1 ") {
+			args = append(args, "hvc=1")
+		}
+	}
+	out, err := exec.Command("/sbin/modprobe", args...).CombinedOutput()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "guestinit: modprobe %s: %v %s\n", mod, err, strings.TrimSpace(string(out)))
 		return
