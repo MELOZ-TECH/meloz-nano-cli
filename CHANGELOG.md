@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Faster boot: on the libkrun backend, from `nanoc up` to Docker answering went
+  from 4.5–5.5 s to 2.1–2.3 s. The guest loads `virtio_rng` first (the kernel
+  took ~1.5 s to gather entropy, and `mkswap` for zram waited for it), loads
+  modules with a few `modprobe -a` calls, and the guest and the daemon check
+  readiness every 100 ms instead of every second. Needs `nanoc bootstrap` for
+  the new guest.
 - libkrun backend: `find` and `stat` on /Users are 2–3 times faster. virtio-fs
   read the owner override xattr of every file it looked up, and on APFS asking
   for a missing xattr cost more than the `lstat` itself; it now lists the
