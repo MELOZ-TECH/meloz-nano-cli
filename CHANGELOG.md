@@ -6,6 +6,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Experimental TSO on the libkrun backend (`NANOC_KRUN_TSO=1`): with guest MTU
+  1500, container → Mac TCP went from 1.6–1.9 to 7.4–8.9 Gbit/s. Needs the libkrun
+  `VNET_HDR` flag (libkrun/libkrun#979, in the bundled patch). MTU 65520 stays the
+  default, since it is as fast in that direction and faster in the other.
+
 ## [0.17.0] - 2026-11-03
 
 To get the new guest (agent relay, Rosetta, `resize2fs`, MTU) after updating:
