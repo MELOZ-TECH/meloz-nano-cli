@@ -27,7 +27,7 @@ jobs:
         run: |
           ./guest/notify/pack-modloop.sh assets/modloop-virt assets/modloop-virt.notify
           ls -l assets
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: guest-modules
           path: guest/notify/*.ko
