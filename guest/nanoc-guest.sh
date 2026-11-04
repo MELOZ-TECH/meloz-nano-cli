@@ -107,6 +107,11 @@ fi
 
 echo NANO-GUEST-READY
 
+# o host só recebe de volta blocos livres de 64 KB (libkrun) ou 2 MB, e o fim do
+# boot deixa a memória livre picada: uma compactação depois que tudo assentou
+# junta os pedaços
+( sleep 90; echo 1 > /proc/sys/vm/compact_memory ) 2>/dev/null &
+
 # supervisor: mantém o agente vivo mesmo se ele sair. Roda em primeiro plano:
 # se este script terminar, o guestinit (PID 1) desliga a VM.
 while true; do

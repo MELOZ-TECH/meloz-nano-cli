@@ -6,6 +6,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The guest compacts its memory once, 90 s after boot. The end of the boot left
+  free memory in small pieces that the host never gets back (the libkrun
+  backend reclaims free blocks of 64 KB). On the libkrun backend, a 2 GB guest
+  went from 426–429 to 370–371 MB on the Mac when idle, and from 462–463 to
+  419 MB a minute after a light load, with the same idle CPU. Needs
+  `nanoc bootstrap`.
+
 ## [0.18.0] - 2026-11-04
 
 All changes are on the libkrun backend. `NANOC_KRUN_FSHVC=1` needs the new guest
