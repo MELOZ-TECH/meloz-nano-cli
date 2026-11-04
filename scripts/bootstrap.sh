@@ -78,6 +78,13 @@ chmod +x "$ROOT/rootfs/opt/nanoc-guest.sh" "$ROOT/rootfs/opt/nanoc-agent" "$ROOT
 rm -rf "$CACHE/initrd" && mkdir -p "$CACHE/initrd"
 gzip -dc "$ASSETS/initramfs-virt" | ( cd "$CACHE/initrd" && cpio -idm --quiet )
 cp "$ROOT/rootfs/guestinit" "$CACHE/initrd/guestinit"
+# o guestinit carrega o virtiofs do initramfs, antes do modloop: troca pelo do
+# virtiofs-hvc.patch quando o build do módulo o gerou para este kernel
+if [ -f "$ROOT/guest/notify/virtiofs.ko" ]; then
+  for ko in "$CACHE"/initrd/usr/lib/modules/*/kernel/fs/fuse/virtiofs.ko; do
+    [ -f "$ko" ] && cp "$ROOT/guest/notify/virtiofs.ko" "$ko"
+  done
+fi
 chmod +x "$CACHE/initrd/guestinit"
 ( cd "$CACHE/initrd" && find . | cpio -o -H newc --quiet | gzip -9 ) > "$ASSETS/initramfs.cpio.gz"
 echo "ok initramfs"

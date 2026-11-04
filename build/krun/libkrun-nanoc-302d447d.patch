@@ -159,8 +159,48 @@ index 201c40ce..65025033 100644
      pub fn register(&self, vcpuid: u64, wfe_sender: Sender<u32>) {
          assert!(vcpuid < self.cpu_count);
          self.vcpus[vcpuid as usize].lock().unwrap().wfe_sender = Some(wfe_sender);
+diff --git a/src/devices/src/virtio/descriptor_utils.rs b/src/devices/src/virtio/descriptor_utils.rs
+index 22c0eb0c..98b40f61 100644
+--- a/src/devices/src/virtio/descriptor_utils.rs
++++ b/src/devices/src/virtio/descriptor_utils.rs
+@@ -222,6 +222,35 @@ impl<'a> Reader<'a> {
+         })
+     }
+ 
++    /// Construct a Reader from guest memory buffers given as (address, length).
++    #[cfg(target_os = "macos")]
++    pub(crate) fn from_guest_buffers(
++        mem: &'a GuestMemoryMmap,
++        buffers: impl IntoIterator<Item = (GuestAddress, u32)>,
++    ) -> Result<Reader<'a>> {
++        let mut total_len: usize = 0;
++        let buffers = buffers
++            .into_iter()
++            .map(|(addr, len)| {
++                total_len = total_len
++                    .checked_add(len as usize)
++                    .ok_or(Error::DescriptorChainOverflow)?;
++                let region = mem.find_region(addr).ok_or(Error::FindMemoryRegion)?;
++                let offset = addr.checked_sub(region.start_addr().raw_value()).unwrap();
++                region
++                    .deref()
++                    .get_slice(offset.raw_value() as usize, len as usize)
++                    .map_err(Error::VolatileMemoryError)
++            })
++            .collect::<Result<VecDeque<VolatileSlice<'a>>>>()?;
++        Ok(Reader {
++            buffer: DescriptorChainConsumer {
++                buffers,
++                bytes_consumed: 0,
++            },
++        })
++    }
++
+     /// Reads an object from the descriptor chain buffer.
+     pub fn read_obj<T: ByteValued>(&mut self) -> io::Result<T> {
+         let mut obj = MaybeUninit::<T>::uninit();
 diff --git a/src/devices/src/virtio/fs/device.rs b/src/devices/src/virtio/fs/device.rs
-index 2ad76395..c1dc693e 100644
+index 2ad76395..9a2da0c8 100644
 --- a/src/devices/src/virtio/fs/device.rs
 +++ b/src/devices/src/virtio/fs/device.rs
 @@ -25,6 +25,9 @@ use super::worker::FsWorker;
@@ -190,7 +230,21 @@ index 2ad76395..c1dc693e 100644
              shm_region: None,
              passthrough_cfg: fs_cfg,
              read_only,
-@@ -131,7 +137,7 @@ impl Fs {
+@@ -109,6 +115,13 @@ impl Fs {
+         defs::FS_DEV_ID
+     }
+ 
++    /// The tag the guest mounts this filesystem by.
++    fn tag(&self) -> String {
++        let tag = &self.config.tag;
++        let end = tag.iter().position(|b| *b == 0).unwrap_or(tag.len());
++        String::from_utf8_lossy(&tag[..end]).into_owned()
++    }
++
+     pub fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
+         self.shm_region = Some(shm_region);
+     }
+@@ -131,7 +144,7 @@ impl Fs {
          cfg.attr_timeout = if matches!(semantics, PermissionSemantics::LinuxSimplified) {
              Duration::ZERO
          } else {
@@ -199,7 +253,7 @@ index 2ad76395..c1dc693e 100644
          };
          cfg.xattr = complete;
          #[cfg(target_os = "macos")]
-@@ -178,6 +184,19 @@ impl Fs {
+@@ -178,6 +191,19 @@ impl Fs {
          true
      }
  
@@ -219,7 +273,15 @@ index 2ad76395..c1dc693e 100644
      pub fn set_export_table(&mut self, export_table: ExportTable) -> u64 {
          static FS_UNIQUE_ID: AtomicU64 = AtomicU64::new(0);
  
-@@ -462,6 +481,63 @@ mod tests {
+@@ -291,6 +317,7 @@ impl VirtioDevice for Fs {
+             self.exit_code.clone(),
+             #[cfg(target_os = "macos")]
+             self.map_sender.clone(),
++            self.tag(),
+         )
+         .map_err(|e| {
+             error!("virtio_fs: failed to create worker: {}", e);
+@@ -462,6 +489,63 @@ mod tests {
          }
      }
  
@@ -283,6 +345,232 @@ index 2ad76395..c1dc693e 100644
      #[test]
      fn null_filesystems_reject_cache_policy_changes() {
          let mut fs = filesystem(None);
+diff --git a/src/devices/src/virtio/fs/hvc.rs b/src/devices/src/virtio/fs/hvc.rs
+new file mode 100644
+index 00000000..d808b94d
+--- /dev/null
++++ b/src/devices/src/virtio/fs/hvc.rs
+@@ -0,0 +1,151 @@
++//! FUSE requests over a vendor hypercall, answered on the vCPU thread.
++//!
++//! A small synchronous request (lookup, getattr, create, unlink...) spends most of
++//! its time on the virtqueue round trip: the queue notification, waking the worker
++//! thread, and the interrupt back. A guest driver that knows about this path can
++//! instead describe the request in guest memory and issue an HVC; the server
++//! handles it on the calling vCPU and the reply is in place when the HVC returns.
++//! Anything else keeps using the virtqueue.
++//!
++//! Calls (x0 = function, x1/x2 = arguments, result in x0):
++//! - [`HVC_FS_QUERY`]: x1 = guest address of the device tag, NUL-terminated, at
++//!   most 36 bytes. Returns a device id, or `u64::MAX` if the tag is unknown.
++//! - [`HVC_FS_REQUEST`]: x1 = device id, x2 = guest address of an [`HvcTable`].
++//!   Returns the number of bytes written to the reply buffers, or `u64::MAX` if
++//!   the request was refused before the server saw it (the guest may then send
++//!   it through the virtqueue).
++
++use std::sync::atomic::AtomicI32;
++use std::sync::{Arc, Mutex};
++
++#[cfg(target_os = "macos")]
++use crossbeam_channel::Sender;
++#[cfg(target_os = "macos")]
++use utils::worker_message::WorkerMessage;
++use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
++
++use super::descriptor_utils::{Reader, Writer};
++use super::worker::FsServer;
++use crate::virtio::VirtioShmRegion;
++
++pub const HVC_FS_QUERY: u64 = 0xC600_0100;
++pub const HVC_FS_REQUEST: u64 = 0xC600_0101;
++
++/// Most segments a request may describe: the FUSE header, a few arguments and
++/// their reply, as the guest builds them for a small request.
++const MAX_SEGS: usize = 16;
++
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++pub struct HvcSeg {
++    pub addr: u64,
++    pub len: u32,
++    pub _pad: u32,
++}
++
++/// Request descriptor in guest memory: `n_out` device-readable segments (the
++/// request) followed by `n_in` device-writable ones (the reply).
++#[repr(C)]
++#[derive(Clone, Copy, Default)]
++pub struct HvcTable {
++    pub n_out: u32,
++    pub n_in: u32,
++    pub segs: [HvcSeg; MAX_SEGS],
++}
++
++// SAFETY: plain old data with no implicit padding.
++unsafe impl ByteValued for HvcSeg {}
++// SAFETY: plain old data with no implicit padding.
++unsafe impl ByteValued for HvcTable {}
++
++pub(crate) struct HvcDevice {
++    pub tag: String,
++    pub server: Arc<FsServer>,
++    pub mem: GuestMemoryMmap,
++    pub allow_idmap: bool,
++    pub shm_region: Option<VirtioShmRegion>,
++    pub exit_code: Arc<AtomicI32>,
++    #[cfg(target_os = "macos")]
++    pub map_sender: Option<Sender<WorkerMessage>>,
++}
++
++static DEVICES: Mutex<Vec<Arc<HvcDevice>>> = Mutex::new(Vec::new());
++
++/// Makes a device reachable through the hypercall. A device that is activated
++/// again (guest reboot) replaces its earlier entry and keeps its id.
++pub(crate) fn register(dev: HvcDevice) {
++    let mut devs = DEVICES.lock().unwrap();
++    let dev = Arc::new(dev);
++    match devs.iter().position(|d| d.tag == dev.tag) {
++        Some(i) => devs[i] = dev,
++        None => devs.push(dev),
++    }
++    #[cfg(target_os = "macos")]
++    let _ = hvf::VENDOR_HVC.set(handle);
++}
++
++pub fn handle(func: u64, x1: u64, x2: u64) -> u64 {
++    match func {
++        HVC_FS_QUERY => query(x1).unwrap_or(u64::MAX),
++        HVC_FS_REQUEST => request(x1, x2).unwrap_or(u64::MAX),
++        _ => u64::MAX,
++    }
++}
++
++fn query(tag_addr: u64) -> Option<u64> {
++    let devs = DEVICES.lock().unwrap();
++    let mem = &devs.first()?.mem;
++    let mut raw = [0u8; 36];
++    mem.read_slice(&mut raw, GuestAddress(tag_addr)).ok()?;
++    let end = raw.iter().position(|b| *b == 0).unwrap_or(raw.len());
++    let tag = std::str::from_utf8(&raw[..end]).ok()?;
++    devs.iter().position(|d| d.tag == tag).map(|i| i as u64)
++}
++
++fn request(id: u64, table_addr: u64) -> Option<u64> {
++    let dev = DEVICES.lock().unwrap().get(id as usize)?.clone();
++    let table: HvcTable = dev.mem.read_obj(GuestAddress(table_addr)).ok()?;
++    let (n_out, n_in) = (table.n_out as usize, table.n_in as usize);
++    if n_out == 0 || n_out + n_in > MAX_SEGS {
++        return None;
++    }
++    let segs = |range: std::ops::Range<usize>| {
++        table.segs[range]
++            .iter()
++            .map(|s| (GuestAddress(s.addr), s.len))
++            .collect::<Vec<_>>()
++    };
++    let reader = Reader::from_guest_buffers(&dev.mem, segs(0..n_out)).ok()?;
++    let writer = Writer::from_guest_buffers(&dev.mem, segs(n_out..n_out + n_in)).ok()?;
++    dev.server
++        .handle_message(
++            reader,
++            writer,
++            dev.allow_idmap,
++            &dev.shm_region,
++            &dev.exit_code,
++            #[cfg(target_os = "macos")]
++            &dev.map_sender,
++        )
++        // A failure here may come after the server acted on the request, so the
++        // guest must not resend it: report an empty reply, as the virtqueue does.
++        .map_or(Some(0), |len| Some(len as u64))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn table_layout_matches_the_guest() {
++        // the guest driver lays the table out the same way: 2 u32, then 16-byte segments
++        assert_eq!(std::mem::size_of::<HvcSeg>(), 16);
++        assert_eq!(std::mem::size_of::<HvcTable>(), 8 + 16 * MAX_SEGS);
++    }
++
++    #[test]
++    fn unknown_calls_and_devices_are_refused() {
++        assert_eq!(handle(0xC600_01FF, 0, 0), u64::MAX);
++        assert_eq!(handle(HVC_FS_REQUEST, 9999, 0), u64::MAX);
++    }
++}
+diff --git a/src/devices/src/virtio/fs/mod.rs b/src/devices/src/virtio/fs/mod.rs
+index d4a74379..f1f35aed 100644
+--- a/src/devices/src/virtio/fs/mod.rs
++++ b/src/devices/src/virtio/fs/mod.rs
+@@ -3,6 +3,7 @@ mod device;
+ #[allow(dead_code)]
+ mod filesystem;
+ pub mod fuse;
++pub mod hvc;
+ mod inode_alloc;
+ #[allow(dead_code)]
+ mod multikey;
+diff --git a/src/devices/src/virtio/fs/worker.rs b/src/devices/src/virtio/fs/worker.rs
+index efdb4648..168c20a8 100644
+--- a/src/devices/src/virtio/fs/worker.rs
++++ b/src/devices/src/virtio/fs/worker.rs
+@@ -28,14 +28,14 @@ use super::server::Server;
+ use super::virtual_entry::VirtualDirEntry;
+ use crate::virtio::{InterruptTransport, VirtioShmRegion};
+ 
+-enum FsServer {
++pub(crate) enum FsServer {
+     ReadWrite(Server<AugmentFs<PassthroughFs>>),
+     ReadOnly(Server<AugmentFs<PassthroughFsRo>>),
+     Null(Server<AugmentFs<NullFs>>),
+ }
+ 
+ impl FsServer {
+-    fn handle_message(
++    pub(crate) fn handle_message(
+         &self,
+         r: Reader,
+         w: Writer,
+@@ -83,7 +83,7 @@ pub struct FsWorker {
+     mem: GuestMemoryMmap,
+     allow_idmap: bool,
+     shm_region: Option<VirtioShmRegion>,
+-    server: FsServer,
++    server: Arc<FsServer>,
+     stop_fd: EventFd,
+     exit_code: Arc<AtomicI32>,
+     #[cfg(target_os = "macos")]
+@@ -105,6 +105,7 @@ impl FsWorker {
+         stop_fd: EventFd,
+         exit_code: Arc<AtomicI32>,
+         #[cfg(target_os = "macos")] map_sender: Option<Sender<WorkerMessage>>,
++        tag: String,
+     ) -> Result<Self, io::Error> {
+         let inode_alloc = Arc::new(InodeAllocator::new());
+         let server = match passthrough_cfg {
+@@ -130,6 +131,18 @@ impl FsWorker {
+                 virtual_entries,
+             ))),
+         };
++        let server = Arc::new(server);
++        // the same server also answers synchronous requests over the hypercall
++        super::hvc::register(super::hvc::HvcDevice {
++            tag,
++            server: server.clone(),
++            mem: mem.clone(),
++            allow_idmap,
++            shm_region: shm_region.clone(),
++            exit_code: exit_code.clone(),
++            #[cfg(target_os = "macos")]
++            map_sender: map_sender.clone(),
++        });
+         Ok(Self {
+             queues,
+             queue_evts,
 diff --git a/src/devices/src/virtio/vsock/unix_proxy/mod.rs b/src/devices/src/virtio/vsock/unix_proxy/mod.rs
 index 15818d18..321b6150 100644
 --- a/src/devices/src/virtio/vsock/unix_proxy/mod.rs
@@ -827,6 +1115,55 @@ index 039394f9..21237f83 100644
                  update.polling = Some((
                      proxy.id,
                      proxy.fd.as_raw_socket() as RawFd,
+diff --git a/src/hvf/src/lib.rs b/src/hvf/src/lib.rs
+index 461f76c5..3ba3d134 100644
+--- a/src/hvf/src/lib.rs
++++ b/src/hvf/src/lib.rs
+@@ -22,7 +22,7 @@ use std::cell::Cell;
+ 
+ use std::convert::TryInto;
+ use std::fmt::{Display, Formatter};
+-use std::sync::{Arc, LazyLock};
++use std::sync::{Arc, LazyLock, OnceLock};
+ use std::time::Duration;
+ 
+ use arch::ArchMemoryInfo;
+@@ -340,6 +340,16 @@ impl HvfVm {
+     }
+ }
+ 
++/// Vendor-specific hypervisor calls (SMCCC owner 6, 0xC600_01xx) answered on the
++/// vCPU thread by a handler that a device registers: x0 is the function, x1 and
++/// x2 its arguments, and the return value goes back in x0.
++pub const VENDOR_HVC_FIRST: u64 = 0xC600_0100;
++pub const VENDOR_HVC_LAST: u64 = 0xC600_01FF;
++
++/// Handler for [`VENDOR_HVC_FIRST`]..=[`VENDOR_HVC_LAST`]. Without one, those
++/// calls return SMCCC NOT_SUPPORTED (-1) instead of stopping the VM.
++pub static VENDOR_HVC: OnceLock<fn(u64, u64, u64) -> u64> = OnceLock::new();
++
+ #[derive(Debug)]
+ pub enum VcpuExit<'a> {
+     Breakpoint,
+@@ -649,6 +659,18 @@ impl HvfVcpu<'_> {
+                 self.write_reg(hv_reg_t_HV_REG_X0, 0)?;
+                 Ok(VcpuExit::CpuOn(mpidr, entry, context_id))
+             }
++            func @ VENDOR_HVC_FIRST..=VENDOR_HVC_LAST => {
++                let ret = match VENDOR_HVC.get() {
++                    Some(handler) => handler(
++                        func,
++                        self.read_reg(hv_reg_t_HV_REG_X1)?,
++                        self.read_reg(hv_reg_t_HV_REG_X2)?,
++                    ),
++                    None => u64::MAX,
++                };
++                self.write_reg(hv_reg_t_HV_REG_X0, ret)?;
++                Ok(VcpuExit::PsciHandled)
++            }
+             val => panic!("Unexpected val={val}")
+         }
+     }
 diff --git a/src/libkrun/src/api/device_builders.rs b/src/libkrun/src/api/device_builders.rs
 index 6b050fd4..21d4e353 100644
 --- a/src/libkrun/src/api/device_builders.rs

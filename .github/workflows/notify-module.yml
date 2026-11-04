@@ -6,6 +6,7 @@ on:
   pull_request:
     paths:
       - 'guest/notify/**'
+      - 'guestinit/**'
       - 'scripts/bootstrap.sh'
       - '.github/workflows/notify-module.yml'
   workflow_dispatch:
@@ -26,3 +27,7 @@ jobs:
         run: |
           ./guest/notify/pack-modloop.sh assets/modloop-virt assets/modloop-virt.notify
           ls -l assets
+      - uses: actions/upload-artifact@v4
+        with:
+          name: guest-modules
+          path: guest/notify/*.ko

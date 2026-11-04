@@ -1,7 +1,8 @@
 #!/bin/sh
 # Remonta o libkrun do nanoc enquanto os PRs não entram no upstream: o main do
-# libkrun (ou BASE=<commit>) mais os branches dos PRs ainda abertos, e regenera
-# libkrun-nanoc-<commit>.patch, que build-libkrun.sh e o CI usam. Não compila.
+# libkrun (ou BASE=<commit>) mais os branches dos PRs ainda abertos e os só do
+# fork, e regenera libkrun-nanoc-<commit>.patch, que build-libkrun.sh e o CI
+# usam. Não compila.
 #
 # uso: build/krun/update-libkrun.sh [clone do libkrun]   (padrão ~/.nano/src/libkrun)
 #      BASE=302d447d build/krun/update-libkrun.sh          (fixa a base)
@@ -13,6 +14,8 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 DIR=${1:-$HOME/.nano/src/libkrun}
 # número do PR no libkrun/libkrun : branch no fork
 PRS="973:vsock-unix-half-close 974:virtiofs-cache-timeouts 975:hvf-gic-wake-wfi 978:vsock-unix-nonblocking-send"
+# branches só do fork, sem PR no upstream (o protocolo é do nanoc)
+FORK="virtiofs-vendor-hvc"
 
 TESTS=tests/test_cases/src/lib.rs
 
@@ -70,6 +73,16 @@ for pr in $PRS; do
     exit 1
   fi
   echo "#$n ($state): aplicado"
+done
+
+for b in $FORK; do
+  if git merge-base --is-ancestor "fork/$b" HEAD; then
+    echo "$b (fork): já contido"
+    continue
+  fi
+  git -c user.name=nanoc -c user.email=nanoc@localhost merge -q --no-edit "fork/$b" >/dev/null 2>&1 ||
+    { echo "$b (fork): CONFLITO; resolva no branch e rode de novo"; git merge --abort; exit 1; }
+  echo "$b (fork): aplicado"
 done
 
 OLD=$(sed -n 's/^COMMIT=//p' "$HERE/build-libkrun.sh")
