@@ -107,6 +107,13 @@ fi
 
 echo NANO-GUEST-READY
 
+# devolve ao Mac o espaço que o Docker apagou: o data.img é esparso e o DISCARD
+# vira F_PUNCHHOLE no host (libkrun). Sem isso o arquivo só cresce. Um minuto
+# depois do boot, para não atrasá-lo, e depois de hora em hora.
+if mountpoint -q /var/lib/docker; then
+  ( sleep 60; while true; do fstrim /var/lib/docker >/dev/null 2>&1; sleep 3600; done ) &
+fi
+
 # supervisor: mantém o agente vivo mesmo se ele sair. Roda em primeiro plano:
 # se este script terminar, o guestinit (PID 1) desliga a VM.
 while true; do
