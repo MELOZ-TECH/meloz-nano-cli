@@ -226,8 +226,9 @@ func runDaemon(kernel, initrd, share, sockPath, ctlPath string) error {
 		waitPort = guestControlPort
 	}
 	var dialErr error
-	for i := 0; i < 90; i++ {
-		time.Sleep(time.Second)
+	// pergunta a cada 0,1 s: de 1 em 1 s o boot arredondava para o segundo seguinte
+	for deadline := time.Now().Add(90 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(100 * time.Millisecond)
 		c, err := dialGuest(vm, waitPort)
 		if err != nil {
 			dialErr = err

@@ -89,8 +89,13 @@ if ! grep -q nanoc.nodocker /proc/cmdline; then
     DOCKERD_CFG="--config-file /run/nanoc-dockerd.json"
   fi
   dockerd --storage-driver=overlay2 $DOCKERD_CFG >/data/dockerd.log 2>&1 &
+  # pergunta a cada 0,1 s: com 1 s o guest perdia em média meio segundo depois
+  # de o dockerd já responder
   i=0
-  while [ $i -lt 25 ]; do docker info >/dev/null 2>&1 && break; sleep 1; i=$((i+1)); done
+  while [ $i -lt 250 ]; do
+    [ -S /var/run/docker.sock ] && docker info >/dev/null 2>&1 && break
+    sleep 0.1; i=$((i+1))
+  done
 fi
 
 if grep -q nanoc.nodocker /proc/cmdline; then
