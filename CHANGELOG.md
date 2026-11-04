@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-04
+
+All changes are on the libkrun backend. `NANOC_KRUN_FSHVC=1` needs the new guest
+module: `nanoc down && nanoc bootstrap && nanoc up` after updating.
+
 ### Changed
 
 - libkrun backend: free guest memory goes back to macOS in 64 KB blocks instead
