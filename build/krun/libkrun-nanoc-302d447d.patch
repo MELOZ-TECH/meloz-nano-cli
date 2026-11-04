@@ -179,6 +179,51 @@ index 201c40ce..65025033 100644
      pub fn register(&self, vcpuid: u64, wfe_sender: Sender<u32>) {
          assert!(vcpuid < self.cpu_count);
          self.vcpus[vcpuid as usize].lock().unwrap().wfe_sender = Some(wfe_sender);
+diff --git a/src/devices/src/virtio/balloon/macos.rs b/src/devices/src/virtio/balloon/macos.rs
+index c7ff3040..a64566df 100644
+--- a/src/devices/src/virtio/balloon/macos.rs
++++ b/src/devices/src/virtio/balloon/macos.rs
+@@ -188,9 +188,9 @@ fn reclaim(
+     }
+ }
+ 
+-/// Smaller or unaligned reports are only madvise()d, so that the guest can't make the VMM split
+-/// the stage-2 mapping of its RAM into small pieces, and because the VMM only replaces whole
+-/// blocks. Linux reports 2 MiB blocks by default.
++/// Smaller or unaligned reports are only madvise()d, because the VMM only replaces whole blocks.
++/// Linux reports 2 MiB blocks by default, and smaller ones with
++/// `page_reporting.page_reporting_order`.
+ fn reclaimable(addr: GuestAddress, len: usize) -> bool {
+     let len = len as u64;
+     len != 0 && addr.0.is_multiple_of(RECLAIM_BLOCK_SIZE) && len.is_multiple_of(RECLAIM_BLOCK_SIZE)
+@@ -323,12 +323,14 @@ mod tests {
+ 
+     #[test]
+     fn test_reclaimable() {
++        const BLOCK: usize = RECLAIM_BLOCK_SIZE as usize;
++        assert!(reclaimable(GuestAddress(0x8000_0000), BLOCK));
+         assert!(reclaimable(GuestAddress(0x8000_0000), 2 << 20));
+-        assert!(reclaimable(GuestAddress(0x8020_0000), 4 << 20));
++        assert!(reclaimable(GuestAddress(0x8020_0000 + RECLAIM_BLOCK_SIZE), 2 * BLOCK));
+         assert!(!reclaimable(GuestAddress(0x8000_0000), 0));
+-        assert!(!reclaimable(GuestAddress(0x8000_0000), 1 << 20));
+-        assert!(!reclaimable(GuestAddress(0x8000_0000), 3 << 20));
+-        assert!(!reclaimable(GuestAddress(0x8010_0000), 2 << 20));
++        assert!(!reclaimable(GuestAddress(0x8000_0000), BLOCK / 4));
++        assert!(!reclaimable(GuestAddress(0x8000_0000), BLOCK + BLOCK / 4));
++        assert!(!reclaimable(GuestAddress(0x8000_1000), BLOCK));
+     }
+ 
+     #[test]
+@@ -446,7 +448,7 @@ mod tests {
+     fn test_small_reports_released_right_away() {
+         let mem = guest_memory();
+         let mut dev = TestDevice::new(&mem, Some(FreePageReportingMode::Replace));
+-        dev.report(&[(0x40_0000, 1 << 20), (0x80_1000, 2 << 20)]);
++        dev.report(&[(0x40_0000, 0x1000), (0x80_1000, 2 << 20)]);
+         assert!(dev.balloon.process_frq());
+         assert_eq!(dev.used(), 1);
+         assert!(dev.worker.try_recv().is_err());
 diff --git a/src/devices/src/virtio/descriptor_utils.rs b/src/devices/src/virtio/descriptor_utils.rs
 index 22c0eb0c..98b40f61 100644
 --- a/src/devices/src/virtio/descriptor_utils.rs
@@ -1464,7 +1509,7 @@ index 6b050fd4..2a79fb3e 100644
              features,
          )
 diff --git a/src/libkrun/src/vmm/builder.rs b/src/libkrun/src/vmm/builder.rs
-index bb1f8e30..f8c7e029 100644
+index bb1f8e30..318a2943 100644
 --- a/src/libkrun/src/vmm/builder.rs
 +++ b/src/libkrun/src/vmm/builder.rs
 @@ -1307,7 +1307,7 @@ pub fn build_microvm(
@@ -1476,6 +1521,135 @@ index bb1f8e30..f8c7e029 100644
                  Ok(hvfgic) => IrqChipDevice::new(Box::new(hvfgic)),
                  Err(_) => IrqChipDevice::new(Box::new(GicV3::new(vcpu_list.clone()))),
              };
+@@ -1996,16 +1996,16 @@ fn map_ram_in_blocks(
+     match map(guest_mem, ram.clone()) {
+         Ok(()) => {
+             info!(
+-                "guest RAM: mapped in {} blocks of {} MiB",
++                "guest RAM: mapped in {} blocks of {} KiB",
+                 (ram.end - ram.start).div_ceil(RECLAIM_BLOCK_SIZE),
+-                RECLAIM_BLOCK_SIZE >> 20
++                RECLAIM_BLOCK_SIZE >> 10
+             );
+             true
+         }
+         Err(e) => {
+             warn!(
+-                "guest RAM: couldn't map it in blocks of {} MiB: {e}",
+-                RECLAIM_BLOCK_SIZE >> 20
++                "guest RAM: couldn't map it in blocks of {} KiB: {e}",
++                RECLAIM_BLOCK_SIZE >> 10
+             );
+             false
+         }
+diff --git a/src/libkrun/src/vmm/macos/vstate.rs b/src/libkrun/src/vmm/macos/vstate.rs
+index caf4e40c..73e49c7d 100644
+--- a/src/libkrun/src/vmm/macos/vstate.rs
++++ b/src/libkrun/src/vmm/macos/vstate.rs
+@@ -96,6 +96,10 @@ impl Display for Error {
+ 
+ pub type Result<T> = result::Result<T, Error>;
+ 
++/// VM tags of the blocks of guest RAM, alternating from one block to the next (the range that
++/// Mach leaves to applications, `VM_MEMORY_APPLICATION_SPECIFIC_1` and the next one).
++const BLOCK_TAGS: [libc::c_int; 2] = [240, 241];
++
+ /// Maps fresh anonymous memory over the `len` bytes of guest memory at `guest_addr`, whose host
+ /// address is `host_addr`, with one mmap() for each block of `RECLAIM_BLOCK_SIZE` guest physical
+ /// addresses (the part of it that is in the range). XNU keeps these mappings apart, as the tests
+@@ -114,6 +118,11 @@ unsafe fn map_fresh_blocks(host_addr: *mut u8, guest_addr: u64, len: u64) -> io:
+     let mut addr = guest_addr;
+     while addr < end {
+         let block_end = (addr + 1).next_multiple_of(RECLAIM_BLOCK_SIZE).min(end);
++        // XNU merges an anonymous mapping into the one before it while the result stays under
++        // 128 KiB, if both have the same tag, and then replacing one block would leave the pages
++        // of that part of the merged object in memory. Neighbouring blocks get different tags so that
++        // each stays an object of its own.
++        let tag = BLOCK_TAGS[(addr / RECLAIM_BLOCK_SIZE % 2) as usize];
+         // SAFETY: the block is within the range, which the caller vouches for.
+         let ret = unsafe {
+             libc::mmap(
+@@ -121,7 +130,7 @@ unsafe fn map_fresh_blocks(host_addr: *mut u8, guest_addr: u64, len: u64) -> io:
+                 (block_end - addr) as usize,
+                 libc::PROT_READ | libc::PROT_WRITE,
+                 libc::MAP_FIXED | libc::MAP_PRIVATE | libc::MAP_ANON | libc::MAP_NORESERVE,
+-                -1,
++                tag << 24,
+                 0,
+             )
+         };
+@@ -968,28 +977,33 @@ mod tests {
+ 
+     #[test]
+     fn test_map_fresh_blocks_follows_guest_physical_blocks() {
+-        // RAM that starts and ends in the middle of a block has a shorter first and last block.
+-        let start = DRAM_MEM_START_EFI + MIB;
+-        let (gm, ram) = ram_memory(start, 6 * MIB);
++        // RAM that starts and ends in the middle of a block has a shorter first and last block;
++        // with blocks of one page, every block is whole.
++        const BLOCK: u64 = RECLAIM_BLOCK_SIZE;
++        let part = if BLOCK > page_size() { BLOCK / 2 } else { BLOCK };
++        let start = DRAM_MEM_START_EFI + part;
++        let (gm, ram) = ram_memory(start, part + 2 * BLOCK + part);
+         map_guest_ram_in_blocks(&gm, ram.clone()).unwrap();
+         touch(&gm, ram, 1);
+ 
+-        let entries: Vec<_> = [start, start + MIB, start + 3 * MIB, start + 5 * MIB]
+-            .into_iter()
+-            .map(|addr| {
++        let layout = [
++            (start, part),
++            (start + part, BLOCK),
++            (start + part + BLOCK, BLOCK),
++            (start + part + 2 * BLOCK, part),
++        ];
++        let entries: Vec<_> = layout
++            .iter()
++            .map(|&(addr, _)| {
+                 let entry = vm_map::entry(host_addr(&gm, addr));
+                 (entry.start, entry.size)
+             })
+             .collect();
+-        assert_eq!(
+-            entries,
+-            [
+-                (host_addr(&gm, start), MIB),
+-                (host_addr(&gm, start + MIB), 2 * MIB),
+-                (host_addr(&gm, start + 3 * MIB), 2 * MIB),
+-                (host_addr(&gm, start + 5 * MIB), MIB),
+-            ]
+-        );
++        let expected: Vec<_> = layout
++            .iter()
++            .map(|&(addr, len)| (host_addr(&gm, addr), len))
++            .collect();
++        assert_eq!(entries, expected);
+     }
+ 
+     #[test]
+@@ -1063,15 +1077,15 @@ mod tests {
+         };
+         let before = objects();
+ 
+-        // Nothing, less than a block, a part of a block, a block that starts in the middle of
+-        // one, and a run that ends in the middle of one.
++        // Nothing, less than a block, a block that starts in the middle of one, and a run that
++        // ends in the middle of one (4 KiB is less than a block of either size).
++        const BLOCK: u64 = RECLAIM_BLOCK_SIZE;
+         for (addr, len) in [
+             (ram.start + 2 * MIB, 0),
+-            (ram.start + 2 * MIB, MIB),
+-            (ram.start + 2 * MIB, RECLAIM_BLOCK_SIZE - page_size()),
+-            (ram.start + 3 * MIB, RECLAIM_BLOCK_SIZE),
+-            (ram.start + 2 * MIB, 3 * MIB),
+-            (ram.start + 2 * MIB, 6 * MIB + page_size()),
++            (ram.start + 2 * MIB, 0x1000),
++            (ram.start + 2 * MIB, BLOCK - 0x1000),
++            (ram.start + 2 * MIB + 0x1000, BLOCK),
++            (ram.start + 2 * MIB, 2 * BLOCK + 0x1000),
+         ] {
+             assert!(
+                 !vm.reclaim_memory(&gm, addr, len).unwrap(),
 diff --git a/src/utils/src/macos/epoll.rs b/src/utils/src/macos/epoll.rs
 index cae27154..f1791768 100644
 --- a/src/utils/src/macos/epoll.rs
@@ -1512,6 +1686,26 @@ index cae27154..f1791768 100644
              }
          }
          Ok(())
+diff --git a/src/utils/src/worker_message.rs b/src/utils/src/worker_message.rs
+index d56e6857..74099e38 100644
+--- a/src/utils/src/worker_message.rs
++++ b/src/utils/src/worker_message.rs
+@@ -1,7 +1,14 @@
+ /// The granularity of [`WorkerMessage::ReclaimMemory`] in guest physical addresses: the VMM
+ /// replaces whole blocks only, and the balloon only asks for ranges of whole blocks.
++///
++/// Free memory in a guest is mostly in pieces smaller than the 2 MiB that Linux reports by
++/// default: 60 s after a light load, a 2 GiB guest had 533 MiB free in pieces of 64 KiB to 2 MiB
++/// and 81 MiB in smaller ones. With 64 KiB blocks, a guest that reports pieces that small
++/// (Linux with `page_reporting.page_reporting_order=4` and 4 KiB pages) gets most of it back to
++/// the host. Each block is a VM object in the kernel, about 10 MiB per 2 GiB of guest RAM, and
++/// mapping the RAM in blocks takes about 10 ms per GiB at boot.
+ #[cfg(target_os = "macos")]
+-pub const RECLAIM_BLOCK_SIZE: u64 = 2 << 20;
++pub const RECLAIM_BLOCK_SIZE: u64 = 64 << 10;
+ 
+ #[derive(Debug)]
+ pub struct MemoryProperties {
 diff --git a/tests/test_cases/src/lib.rs b/tests/test_cases/src/lib.rs
 index d4c78ecc..1c0b056b 100644
 --- a/tests/test_cases/src/lib.rs

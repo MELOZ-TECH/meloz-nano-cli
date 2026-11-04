@@ -28,7 +28,7 @@ it off.
 libkrun `main` at `302d447d` (2.0.0-dev), which has the two macOS fixes this
 backend first needed (libkrun/libkrun#971: `arm,primecell` on the PL011 node,
 without which Linux never creates `ttyAMA0`, and 2-byte MMIO writes), plus five
-patches sent upstream and one kept in the fork:
+patches sent upstream and two kept in the fork:
 
 - `libkrun-vsock-half-close.patch` (libkrun/libkrun#973): the unix vsock proxy
   turns a half-close from the Mac side into a vsock shutdown instead of a reset,
@@ -50,6 +50,8 @@ patches sent upstream and one kept in the fork:
 - `virtiofs-vendor-hvc` (fork branch only, since the protocol is nanoc's):
   virtio-fs answers small requests over a vendor hypercall on the vCPU thread
   (see "/Users requests over a hypercall").
+- `balloon-reclaim-64k` (fork branch only): free guest memory goes back to
+  macOS in 64 KiB blocks instead of 2 MiB (see "Memory in 64 KiB blocks").
 
 They touch the same list of end-to-end tests, so they do not apply one after
 another; `libkrun-nanoc-302d447d.patch` is all of them together, as built here
@@ -296,6 +298,34 @@ A 20 MB random file kept its SHA-256 both ways, and 4 processes creating and
 reading 1,200 files in parallel gave no errors or kernel warnings. Create and
 delete are still about twice OrbStack's; what is left is on the Mac side (the
 passthrough's system calls), not in the transport.
+
+## Memory in 64 KiB blocks (2026-11-04)
+
+libkrun's Replace mode only gave back free blocks of 2 MiB. Smaller free pieces
+were only `madvise(MADV_FREE)`d, which does not lower the footprint of pages the
+guest wrote. Most of a guest's free memory is in those smaller pieces: in a 2 GB
+guest, 60 s after a light load (postgres running, a python and a node container
+run), 533 MB were free in pieces of 64 KiB to 2 MiB and 81 MB in smaller ones.
+
+- libkrun (`balloon-reclaim-64k`) maps guest RAM in 64 KiB blocks, each its own
+  VM object, and replaces whole blocks as before. XNU merges an anonymous
+  mapping into the previous one while the result stays under 128 KiB if both
+  have the same VM tag, and replacing one block of a merged object would leave
+  that part's pages in memory. So neighbouring blocks get alternating tags (240,
+  241).
+- nanoc adds `page_reporting.page_reporting_order=4` (64 KiB with 4 KiB pages)
+  to the kernel command line; `NANOC_KRUN_FPR_ORDER` changes it.
+
+Tested on the Mac with Hypervisor.framework: `madvise` with `MADV_FREE` or
+`MADV_DONTNEED`, with or without unmapping the range from the VM first, left the
+footprint unchanged; replacing the blocks with a new `mmap` lowered it by
+exactly the replaced memory, about 3 µs per 16 KiB block. Each block costs a VM
+object and a map entry in the kernel (256 and 64 bytes): about 10 MB per 2 GB of
+guest RAM with 64 KiB blocks, 41 MB with 16 KiB. Mapping the RAM in blocks takes
+about 10 ms per GB at boot.
+
+Same load, same guest, MEM in `top` 60 s later: 1498 MB with 2 MiB blocks,
+641 MB with 64 KiB blocks.
 
 ## Data disk (2026-11-03)
 

@@ -37,7 +37,7 @@ orb)
 nanoc)
   NH=$K/bh; SOCK=$NH/.nanoc/docker.sock
   start() { cd $K && HOME=$NH NANOC_MODLOOP=$K/modloop/modloop-virt NANOC_DATA_REL=bench-data.img NANOC_SHARE_DIR=$K \
-    NANOC_BACKEND=krun NANOC_KRUN_INITRD=$K/bin/initramfs-krun.cpio.gz $K/bin/nanoc-krun up >/dev/null; }
+    NANOC_BACKEND=krun NANOC_KRUN_INITRD=${NANOC_KRUN_INITRD:-$K/bin/initramfs-krun.cpio.gz} $K/bin/nanoc-krun up >/dev/null; }
   stop() { HOME=$NH NANOC_BACKEND=krun $K/bin/nanoc-krun down >/dev/null; }
   pids() { pgrep -f 'nanoc-krun' | tr '\n' ' '; } ;;
 esac
