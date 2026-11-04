@@ -6,6 +6,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- libkrun backend: free guest memory goes back to macOS in 64 KB blocks instead
+  of 2 MB (`page_reporting.page_reporting_order=4`, `NANOC_KRUN_FPR_ORDER`). With
+  a light load, a 2 GB guest went from 1498 MB to 641 MB on the Mac.
+
 ### Added
 
 - Experimental `NANOC_KRUN_FSHVC=1` on the libkrun backend: small synchronous

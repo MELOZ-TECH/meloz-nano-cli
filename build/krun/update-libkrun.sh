@@ -15,7 +15,7 @@ DIR=${1:-$HOME/.nano/src/libkrun}
 # número do PR no libkrun/libkrun : branch no fork
 PRS="973:vsock-unix-half-close 974:virtiofs-cache-timeouts 975:hvf-gic-wake-wfi 978:vsock-unix-nonblocking-send"
 # branches só do fork, sem PR no upstream (o protocolo é do nanoc)
-FORK="virtiofs-vendor-hvc"
+FORK="virtiofs-vendor-hvc balloon-reclaim-64k"
 
 TESTS=tests/test_cases/src/lib.rs
 

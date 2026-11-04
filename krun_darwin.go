@@ -340,6 +340,13 @@ func krunCmdline(created, noDocker bool) string {
 	if os.Getenv("NANOC_KRUN_FSHVC") == "1" {
 		cmdline += " virtiofs.hvc=1"
 	}
+	// o libkrun do nanoc devolve ao Mac blocos livres de 64 KB; sem isso o Linux só
+	// reporta blocos de 2 MB e os pedaços menores ficam com a VM (533 MB numa VM de
+	// 2 GB depois de uma carga leve). Com páginas de 4 KB no guest, ordem 4 = 64 KB.
+	// NANOC_KRUN_FPR_ORDER muda
+	if order := envOr("NANOC_KRUN_FPR_ORDER", "4"); order != "" {
+		cmdline += " page_reporting.page_reporting_order=" + order
+	}
 	return cmdline + " console=ttyAMA0"
 }
 
