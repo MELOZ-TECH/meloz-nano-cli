@@ -6,6 +6,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-11-06
+
+Most changes are in the guest: run `nanoc down && nanoc bootstrap && nanoc up`
+after updating. They were measured on the libkrun backend.
+
 ### Changed
 
 - Faster boot: on the libkrun backend, from `nanoc up` to Docker answering went
